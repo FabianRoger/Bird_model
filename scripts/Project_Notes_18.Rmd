@@ -1,0 +1,64 @@
+---
+title: "Swedish Bird habitat model"
+subtitle: "Project Notes"
+author: "Fabian Roger"
+output: html_notebook
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+---
+
+# `r format(as.POSIXct("2019-02-25"), '%d %B, %Y')`
+
+## Lindström and Svensson 2004
+
+2 main methods for surveying Birds:
+
+**freely chosen route with point surveying**
+
+[summer routes](http://www.fageltaxering.lu.se/inventera/metoder/punktrutter/metodik-sommarpunktrutter)
+
+[vinter routes](http://www.fageltaxering.lu.se/inventera/metoder/punktrutter/metodik-vinterpunktrutter)
+
++ since 1975
++ observer chooses route freely
++ 20 stop points along route on which birds are recorded for 5 min
++ min 300 m between points (in forest) or 400 m (in open terrain)
++ _all birds_ are counted from _each point_
+
++ once in the summer, once or 5 times in winter, approximately same dates and starting times
+
+**fixed standard routes**
+
+[description](http://www.fageltaxering.lu.se/inventera/metoder/standardrutter/metodik-standardrutter)
+
++ since 1996
++ 8 km long (square of 2x2)
++ starting heading north, then east
++ routes are fixed and have a minimum distance of 25 km to all sites
++ 716 routes in total, spread systematically over the whole of Sweden
++ coordinates given in RT90 2.5 gon V0:-15 _not_ SWEREF99
+
+
+Pointcounts:
+
++ on each corner and halfway between each corner a point count takes place (5 min)
++ all seen or heard birds are recorded _independent_ from birds on lines
++ point count should be performed on the point itself or else from the nearest reachable point within 200 m from the point itsel
++ double counting should be avoided across points - if a sighting represents the same bird detected from more than one point is up to the observer to judge
+
+Linecounts:
+
++ along the route, birds are recorded during slow walk, min 30 min per full km, approx 30-40 min / km
++ the lines should be followed as close as possible
++ obstacles should be circumvented (e.g. lakes or fields), the counting continious as long as the observer is within 200m of the line. If the observer has to leave the 200 m corridor, recording should be interupted until the corridor is reached again.
++ small obstacles should be overcome were possible and the counting should be taken up again on the other side. 
++ doublecounting should be avoided, also across line transects
++ binoculars are discouraged
+
++ nestlings should not be counted
++ counting should start at 4 a.m. sommer time, (±30 min) but not earlier than 30 min before sunrise
++ the start time of each point count and the effctive inventory time of each line transect should be recorded
++ teh date should be during the high breeding season for most species after the arrival and establishment of migratory species. Exact dates vary with latitude but start from may 15th in the south to June 15th in the north / the mountain regions. 
++ the same routes should be visited within ±5 days compared to last year
+
+
+
