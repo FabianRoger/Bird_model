@@ -6,9 +6,7 @@ output: html_notebook
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 ---
 
-# `r format(as.POSIXct("2019-02-25"), '%d %B, %Y')`
-
-## Lindström and Svensson 2004
+# 2019-02-25
 
 2 main methods for surveying Birds:
 
@@ -59,6 +57,46 @@ Linecounts:
 + the start time of each point count and the effctive inventory time of each line transect should be recorded
 + teh date should be during the high breeding season for most species after the arrival and establishment of migratory species. Exact dates vary with latitude but start from may 15th in the south to June 15th in the north / the mountain regions. 
 + the same routes should be visited within ±5 days compared to last year
+
+# 2019-02-26
+
+Lindbladh et al 2017: Avian diversity in Norway spruce production forests
+
+
++ looked at bird diveristy in spruce ( _Picea abies_) monoculture in souther Sweden
++ stands are even-aged, have a rotation period between 45 and 70 years and are thinned 2-3 times before
++ young stands are dominated by broadleaves, mainly birch, naturally regenerated
++ used point counts, with 40 / 50 m radius
+
++ found strong differences in species composition between < 15 years and older forest
+    + old forest = common forest birds
+    + < 15 years =  habitat also for farmland species but also including migrants
++ inclusinion of < 15 % of broadleave tree species has positive effect on bird richness in old stands
+
+
+Thoughts: 
+ + can we model bird functional diversity in relation to habitat type (eitehr directly or as emrging property from the full community)
+ + data are on route level, but what scale are we interested in? 
+ + if we replace open landscape by forestry, how much FB diversity will be lost, how much maintained on clear cuts? How much does this depend on remaining farmland nearby?
+
+
+# 2019-03-01
+
+Discussion with Niklas:
+
++ we have Landuse data only for one timepoint
++ we have clearcut data going back in time but only know when it was cut, not when it was replanted
++ we could probably make a historic classification with LandSat data but we need to discuss what we want exactly
+
+Thoughts:
+
++ should we model routes or should we aggregate larger landscapes and then average out both routes and landscape features? Teh latter is maybe also more compatible with the output of Agripolis
+
++ if we do a stacked SDM, can we include landscape features of different radii for different birds (if modeled at route level)
+
+
+
+
 
 
 
