@@ -1,0 +1,108 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(ranger)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(broom)
+library(sf)
+library(here)
+```
+
+```{r}
+ClearCutHeight <- read.csv(here::here("data", "ClearCuts", "ClearCutHeightAge.csv"))
+ClearCut <- st_read(here("data", "ClearCuts", "sksUtfordAvverk.shp"))
+```
+
+
+```{r}
+ClearCut_C <-
+ClearCut %>% 
+  select(OBJECTID) %>% 
+  mutate(geometry = st_centroid(geometry))
+
+CC_Coord <- 
+  st_coordinates(ClearCut_C) %>% 
+  as_tibble() %>% 
+  mutate(OBJECTID = ClearCut_C$OBJECTID)
+
+  
+```
+
+
+```{r}
+ ClearCutHeight %>% 
+  mutate(NAs_h_05 = 100*NAs_h_05/size,
+         NAs_h_45 = 100*NAs_h_45/size,) %>% 
+  gather(variable, value, -OBJECTID, -age, -size) %>%
+  ggplot(aes(x = age, y = value))+
+  stat_binhex(aes(fill=log10(..count..)))+
+  geom_smooth(se = F)+
+  facet_wrap(~variable, scales = "free_y")+
+  scale_fill_viridis_c()+
+  theme_minimal()
+  
+```
+
+```{r}
+
+ ClearCutHeight_filt <- 
+  ClearCutHeight %>% 
+  left_join(CC_Coord) %>% 
+ # select(-starts_with("sd_")) %>% 
+  filter(size > 50) %>% 
+  filter(age > 0) %>% 
+  na.omit()
+
+
+```
+
+```{r}
+train <- sample_frac(ClearCutHeight_filt, size = 0.6)
+val <- filter(ClearCutHeight_filt, ! OBJECTID %in% train$OBJECTID )
+```
+
+
+```{r}
+ageRF <- ranger(formula = age ~ .,
+                data = select(train, -OBJECTID),
+                num.trees = 500,
+                importance = "permutation")
+
+ageRF
+
+importance(ageRF)
+
+pred <- predict(ageRF, data = val)
+
+val %>% 
+  mutate(prediction = pred$predictions) %>% 
+  ggplot(aes(x = prediction, y = age))+
+  geom_point(size = 0.1, alpha = 0.1)+
+ # stat_binhex(aes(fill=log10(..count..)))+
+  geom_smooth(method = "lm")+
+  theme_minimal()+
+  #scale_fill_viridis_c()
+  NULL
+
+val %>% 
+  mutate(prediction = pred$predictions) %>% 
+  lm(age~prediction, data = .) %>% 
+  glance()
+
+
+binary <-
+val %>% 
+  mutate(prediction = pred$predictions) %>% 
+  mutate_at(.vars = c("age", "prediction"),
+            function(x) case_when(x <= 0 ~ 0,
+                                  x > 0 ~ 1))
+ 
+table(binary$age, binary$prediction) / sum(table(binary$age, binary$prediction))*100
+
+```
+
