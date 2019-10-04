@@ -23,7 +23,10 @@ Standard_geo <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_standardrutte
 species_codes <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_eurolist.xlsx")
 ```
 
-reformat geo data and add coordinates for each point and line count
+## reformat geo data
+
+add coordinates for each point and line count
+
 ```{r}
 
 # use sweref coordinates and transform to simple feature DF with SWEREF projection
@@ -82,7 +85,7 @@ Standard_geo <-
 
 ```
 
-plot example
+## plot example
 
 ```{r}
 Standard_geo %>% 
@@ -120,7 +123,7 @@ The standard data contain the following information:
 + `datum`: the date
 + `yr`: the year
 + `art`: the artcode.
-    + artcode 000 is used to store the time at which a point has been counted and the (in minutes) which it has taken to walk a given line
+    + artcode 000 is used to store the time at which a point has been counted and the time (in minutes) which it has taken to walk a given line
     + artcode 999 is used to say what proportion (1-10, where 1 = 10%) of the line is counted
         + if artcode 999 contains 99 this means no data on the proportion of the line counted is available
         + if artcode 999 contains a 1 in field p1, then mamals have also been counted
@@ -146,7 +149,7 @@ cleaning time for pointcounts
 # I recode missing values (0 , 99) as NA
 # I correct impossible times by assuming that the most likly misstake is a flip in the digits
 
-#Standard_data_meta_p <- 
+Standard_data_meta_p <- 
   Standard_data_meta %>% 
     filter(grepl("p", position)) %>% 
     select(-`999`) %>% 
@@ -195,9 +198,9 @@ filter(Standard_data, ! art %in% c("000", "999")) %>% # filter out non-species c
   select(karta, yr, art, starts_with("p"), -pkind, -persnr) %>% 
   mutate_at(vars(starts_with("p")), function(x) case_when(is.na(x) ~ 0, TRUE ~ x)) %>% 
   gather(position, abundance, -karta, -yr, -art) %>% 
-  left_join(select(species_codes, art, englishname, genus, species, lat6)) %>% 
+  left_join(select(species_codes, art, englishname, latin, genus, species, lat6)) %>% 
   left_join(Standard_data_meta_p) %>% 
-  select(karta, yr, persnr, datum, timepoint, position, art, abundance, englishname, genus, species, lat6) %>% 
+  select(karta, yr, persnr, datum, timepoint, position, art, abundance, englishname, latin, genus, species, lat6) %>% 
   mutate_if(is.numeric, as.integer)
 
 write_tsv(Standard_points, here("data", "Standard_routes_points.txt"))
@@ -240,10 +243,10 @@ filter(Standard_data, ! art %in% c("000", "999")) %>% # filter out non-species c
   select(karta, yr, art, starts_with("l"), -lind) %>% 
   mutate_at(vars(starts_with("l")), function(x) case_when(is.na(x) ~ 0, TRUE ~ x)) %>% 
   gather(position, abundance, -karta, -yr, -art) %>% 
-  left_join(select(species_codes, art, englishname, genus, species, lat6)) %>% 
+  left_join(select(species_codes, art, englishname, latin, genus, species, lat6)) %>% 
   left_join(Standard_data_meta_l) %>% 
   select(karta, yr, persnr, datum, timepoint, position, prop_counted, art,
-         abundance, englishname, genus, species, lat6) %>% 
+         abundance, englishname, latin, genus, species, lat6) %>% 
   mutate_if(is.numeric, as.integer)
 
 
