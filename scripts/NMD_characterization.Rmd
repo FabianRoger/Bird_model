@@ -5,7 +5,6 @@ output:
     df_print: paged
 ---
 
-
 ## load libraries
 
 ```{r, message = FALSE}
@@ -17,8 +16,9 @@ library(tidyr)
 library(dplyr)
 library(ggplot2)
 library(here)
-library(parallel)
-library(future.apply)
+#library(parallel)
+#library(future.apply)
+library(pbapply)
 ```
 
 ## load bird routes
@@ -36,10 +36,14 @@ NMD <- raster(here("data", "NMD", "nmd2018bas_ogeneraliserad_v1_0.tif"))
 NMD_meta <- 
   NMD@data@attributes %>% 
   as.data.frame() %>% 
-  dplyr::select(-Opacity) %>% 
-  filter(Klass != "") %>% 
   mutate(Klass = iconv(as.character(Klass), "latin1"))
 
+levels(NMD) <- NMD_meta
+
+NMD_meta <-
+  NMD_meta %>% 
+  dplyr::select(-Opacity) %>% 
+  filter(Klass != "") 
 ```
 
 
@@ -101,9 +105,6 @@ Water
 ![NMD categories](../plots/NMD_baskartering.png)
 
 
-
-
-
 # extract Landuse around routes
 
 Here we extract the landuse around the points and lines of each route (separately). 
@@ -138,15 +139,13 @@ Standard_geo_buffer <-
 
 **crop list of raster for NMD data**
 ```{r}
-plan(multiprocess, workers = 4)
 
 # extract raster from NMD for each route
 Standard_geo_raster <- 
 Standard_geo_buffer %>% 
   split(.$karta) %>%
-  future_lapply(., function(x) crop(NMD, x))
+  pblapply(., function(x) crop(NMD, x))
 
-plan(sequential)
 ```
 
 example of point buffers
@@ -186,6 +185,10 @@ NMD_meta <-
 
 pal = c(NMD_meta$Colour)
 names(pal) <- NMD_meta$Klass
+
+# trying to recreate default colours. not working yet
+pal2 <- terrain.colors(128)[NMD_meta$ID]
+names(pal2) <- NMD_meta$Klass
 ```
 
 
@@ -198,7 +201,7 @@ Standard_geo_raster[[1]] %>%
   left_join(NMD_meta) %>% 
   ggplot() +  
   geom_raster(aes(x=x, y=y, fill=Klass, alpha = 0.9))+
-  geom_sf(data = Karta_lines, colour = "black")+
+  geom_sf(data = filter(Standard_geo, karta == "02C2H"), colour = "black")+
   geom_sf(data = st_buffer(filter(Standard_geo, karta == "02C2H" & 
                                     type == "point"), 500), 
           fill = NA, colour = "red")+
@@ -207,7 +210,6 @@ Standard_geo_raster[[1]] %>%
   theme(legend.position = "none")+
   #theme(legend.position = "bottom")+
   NULL
-  
 ```
 
 
@@ -267,7 +269,7 @@ Standard_geo_raster[[1]] %>%
   left_join(NMD_meta) %>% 
   ggplot() +  
   geom_raster(aes(x=x, y=y, fill=Klass, alpha = 0.8))+
-  geom_sf(data = Karta_lines, colour = "black")+
+  geom_sf(data = filter(Standard_geo, karta == "02C2H"), colour = "black")+
   geom_sf(data = filter(Line_buffers, karta == "02C2H"), 
           fill = NA, colour = "red")+
   scale_fill_manual(values = pal)+
@@ -285,7 +287,7 @@ Routes <- names(Standard_geo_raster)
 plan(multiprocess, workers = 4)
 
 LandUse_points <- 
-future_lapply(Routes, function(x) {
+pblapply(Routes, function(x) {
   
   filter(Line_buffers, karta == x) %>%
   raster::extract(x = Standard_geo_raster[[x]], y =  ., cellnumbers = F,  df = T) %>% 
@@ -317,7 +319,7 @@ Routes <- names(Standard_geo_raster)
 plan(multiprocess, workers = 4)
 
 LandUse_lines <- 
-future_lapply(Routes, function(x) {
+pblapply(Routes, function(x) {
   
   filter(Standard_geo, karta == x, type == "point") %>%
   raster::extract(x = Standard_geo_raster[[x]], y =  .,
@@ -325,13 +327,11 @@ future_lapply(Routes, function(x) {
     as_tibble() %>% 
     mutate(karta = x, position = paste("p", ID, sep = "")) %>% 
     rename(NMD_base = nmd2018bas_ogeneraliserad_v1_0) %>% 
-    group_by(karta, position, nmd) %>% 
+    group_by(karta, position, NMD_base) %>% 
     summarise(n = n())
   
   }) %>% 
   bind_rows()
-
-plan(sequential)
 
 ```
 
