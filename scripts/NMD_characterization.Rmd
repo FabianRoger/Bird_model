@@ -1,0 +1,440 @@
+---
+title: "habitat characterization with NMD data"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+## load libraries
+
+```{r, message = FALSE}
+library(sf)
+library(raster)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(here)
+library(parallel)
+library(future.apply)
+```
+
+## load bird routes
+
+```{r}
+Standard_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
+#Freecounts_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
+```
+
+## load NMD data
+
+```{r}
+NMD <- raster(here("data", "NMD", "nmd2018bas_ogeneraliserad_v1_0.tif"))
+
+#NMD_pasture <- raster(here("data", "NMD_Tillaggsskikt_Markanvandning", "NMD_markanv_bete_v1.tif"))
+
+#NMD_build_areas <- raster(here("data", "NMD_Tillaggsskikt_Markanvandning", "NMD_markanv_anlagda_omr_v1.tif"))
+
+#NMD_kraft <- raster(here("data", "NMD_Tillaggsskikt_Markanvandning", "NMD_markanv_kraftledning_v1.tif"))
+
+NMD_meta <- 
+  NMD@data@attributes %>% 
+  as.data.frame() %>% 
+  dplyr::select(-Opacity) %>% 
+  filter(Klass != "") %>% 
+  mutate(Klass = iconv(as.character(Klass), "latin1"))
+
+# NMD_pasture_meta <- 
+#   NMD_pasture@data@attributes %>% 
+#   as.data.frame() %>% 
+#   select(-Opacity) %>% 
+#   filter(Klass != "") %>% 
+#   mutate(Klass = iconv(as.character(Klass), "latin1"))
+# 
+# NMD_build_areas_meta <- 
+#   NMD_build_areas@data@attributes %>% 
+#   as.data.frame() %>% 
+#   select(-Opacity) %>% 
+#   filter(Klass != "") %>% 
+#   mutate(Klass = iconv(as.character(Klass), "latin1"))
+# 
+# NMD_kraft_meta <- 
+#   NMD_kraft@data@attributes %>% 
+#   as.data.frame() %>% 
+#   select(-Opacity) %>% 
+#   filter(Klass != "") %>% 
+#   mutate(Klass = iconv(as.character(Klass), "latin1"))
+# 
+# #st_layers(here("data", "NMD", "NMD2018metadata_v4.gdb"))
+# 
+
+```
+
+
+# Data description
+
+## NMD data
+
+Here we use the new Swedish NMD data (Nationella Marktäckedata - NMD, Naturvårdsverket) to extract the habitat types around the bird monitoring routes. 
+The NMD data have been released in 2019. They are open (CC0 licens) and free. 
+
+
++ Resolution : 10 x 10 m
++ combination of Satellite data (**Sentinel 2A/2B**) + laser scanning (**LIDAR** from airplane) + existing maps 
++ 25 land-use classes in 3 hirachical levels + additional classes in extra layers
++ additional information is stored as attributes
++ data are from 2009-2018 (LIDAR) and 2015-2018 (Sentinel). 
+
+Forest class
+
++ 7 classes
++ good differentiation of broad leaf forest and coniferous forest
++ good differntiation between Pine and Spruce forest
++ mixed class 'barrblandskog' (coniferous forest) is of ok quality, can be confounded with either pure pine or pure Spruce
++ mixed class 'Lövblan-dad barrskog' (Deciduous coniferous forest) is of ok quality. However a lot of the forest in this category will grow up to become pure coniferous forest
++ mixed class 'triviallövskog med ädellövinslag' (trivial broad leave with mixture parts of oak or book etc) is error prone class
++ old forests have better classification than young forest
++ sparse forests and small treegroups / single trees can't be trusted in their classification
++ In pure deciduous forest, if the LIDAR picture has been taken before the blossom of the leaves, the prct forest can be underestimated. 
+
+Open wetlands
+
++ in genreal good quality data
++ can overestimate wetland on grasland, especially if it was former agricultureal land  
+
+Agricultural land
+
++ data come from blockdatabase + time series of satelite data within the land whcih is classified as Agricultural land by Lantmäteriet 
++ if not enough pictures are present of a time-series, agricultural fields can be missed
++ Agricultural land with a vegetation height of > 5m can be classified as forest (energyplants, christmass trees, fruit tree plantations)
+
+Other open landscape
+
++ subclasses with and without vegetation
++ without vegetation can be hard to distinguis from agricultural land or clearcuts
++ old clearcuts with slow to no regeneration (<5m height) can be classified as "other open land". Mostly a problem in unproductive region in the cenrte and north of Sweden
+
+Exploited land
+
++ three subclasses buildings, streets, and other
++ for buildings, the focus was on preserving the are covered by buildings, which decreases teh accuracy of buildings at pixel level
++ for roads (and railways), continuity has been preserved which leads to an overestimation of the area covered by this class
++ other exploited land can be mixed with other open land without vegetation, especially rockbed and beaches
+
+Water
++ 2 classes: See, Lakes and Rivers (>6m)
++ the two classes can sometimes be hard to differentiate for costal lagunes
+
+
+![NMD categories](../plots/NMD_baskartering.png)
+
+
+
+
+
+# extract Landuse around routes
+
+Here we extract the landuse around the points of each route. We use a 500m buffer around each point. The Buffer size takes into account the fact that observers can deviate from the route up to 200m, that most birds are observed in the range up to 150m (or less) but that the presence of a bird is also influenced by nearby habitat. 
+
+
+To extract the data efficiently we 
+
++ make a 1 km buffer around each route (encompassing all points & lines + buffer)
++ crop the raster from which we want to extract to this buffer, creating a list of rasters, one per route
++ extract data for buffer around points from raster in list
+
+This approach is much faster than attempting to extract the data from the large raster directly. We repeat it for each raster and keep the xy coordinates for each extracted value. As all raster have the same origin, we can join the extaracted data for different raster by coordinates. 
+
+**make buffer for raster extraction** 
+```{r}
+
+# make a 1km buffer around each route
+Standard_geo_buffer <- 
+  Standard_geo %>% 
+  group_by(karta) %>% 
+  summarise() %>% 
+  st_convex_hull() %>% 
+  st_buffer(d) 
+```
+
+**crop list of raster for NMD data**
+```{r}
+plan(multiprocess, workers = 4)
+
+# extract raster from NMD for each route
+Standard_geo_raster <- 
+Standard_geo_buffer %>% 
+  #filter(karta %in% unique(Standard_geo_buffer$karta)[1:10]) %>% 
+  #slice(1:5) %>%
+  split(.$karta) %>%
+  future_lapply(., function(x) crop(NMD, x))
+
+plan(sequential)
+```
+
+
+Make buffers for line counts
+```{r}
+
+#distance centroid to mid-line point
+d <- 1000
+
+# buffer width
+b <- 500
+
+Line_buffers <- 
+  Standard_geo %>% 
+    group_by(karta) %>% 
+    summarise() %>% 
+    st_centroid() %>% 
+    mutate(p1 = geom + c(0,d-b/2),
+           p2 = geom + c(0,d+b/2),
+           p3 = geom + c(d-b/2,d-b/2),
+           p4 = geom + c(d+b/2, d+b/2),
+           p5 = geom + c(d-b/2,0),
+           p6 = geom + c(d+b/2,0),
+           p7 = geom + c(d-b/2,-(d-b/2)),
+           p8 = geom + c(d+b/2,-(d+b/2)),
+           p9 = geom + c(0,-(d-b/2)),
+           p10 = geom + c(0,-(d+b/2)),
+           p11 = geom + c(-(d-b/2),-(d-b/2)),
+           p12 = geom + c(-(d+b/2), -(d+b/2)),
+           p13 = geom + c(-(d-b/2),0),
+           p14 = geom + c(-(d+b/2),0),
+           p15 = geom + c(-(d-b/2),d-b/2),
+           p16 = geom + c(-(d+b/2), d+b/2)) %>% 
+    pivot_longer(cols = starts_with("p"), names_to = "point") %>% 
+    dplyr::select(-geom) %>% 
+    rename(geom = value) %>% 
+    group_by(karta) %>% 
+    slice(c(1,2,3,4,3,4,5,6,5,6,7,8,7,8,9,10,9,10,11,12,11,12,13,14,13,14,15,16,15,16,1,2)) %>%
+    mutate(line = rep(rep(1:8, each = 4),n()/32)) %>% 
+    st_as_sf()  %>% 
+    group_by(karta, line) %>% 
+    summarise() %>% 
+    st_convex_hull() %>% 
+    st_set_crs(crs(Standard_geo)) %>% 
+    mutate(line = paste("l", line, sep = ""))
+
+
+filter(Line_buffers, karta == "02C2H") %>% plot
+    
+{
+  Karta_lines <- filter(Standard_geo, karta == "02C2H")
+  #  filter(grepl(paste(seq(2,8,2), collapse = "|"), position)) 
+    
+  
+  plot(Standard_geo_raster[[1]])
+  plot(Karta_buffers, add = TRUE, col = NA, lwd = 1)
+  plot(Karta_lines, add = TRUE, col = "red", lwd = 3)
+}
+```
+
+export plot for extracted raster
+```{r}
+
+# KARTA <- names(Standard_geo_raster)
+# 
+# dir.create(here("plots", "routes"))
+# 
+# for(i in KARTA){
+#   
+#   pdf(here("plots", "routes", paste(i, ".pdf", sep = "")), onefile = FALSE)
+# 
+#   Karta_buffers <- filter(Standard_geo, karta == i) %>% 
+#   filter(type == "point") %>% 
+#   st_buffer(500) 
+#   
+#   Karta_lines <- filter(Standard_geo, karta == i)
+#   
+#   {
+#     plot(Standard_geo_raster[[i]])
+#     plot(Karta_buffers, add = TRUE, col = NA, lwd = 3)
+#     plot(Karta_lines, add = TRUE, col = "red", lwd = 3)
+#   }
+#   
+#   dev.off()
+#   
+# }
+
+
+```
+
+**extract data for 500m buffer around each point for each route**
+```{r}
+# vector of route names 
+Routes <- names(Standard_geo_raster)
+
+# extract rastervalues in 500 m buffer around points for all routes
+plan(multiprocess, workers = 4)
+
+NMD_list_points <- 
+future_lapply(Routes, function(x) {
+  
+  filter(Standard_geo, karta == x, type == "point") %>%
+  raster::extract(x = Standard_geo_raster[[x]], y =  .,
+                  buffer = 500, cellnumbers = T,  df = T) %>% 
+    as_tibble() %>% 
+    mutate(karta = x, position = paste("p", ID, sep = ""))
+  
+  }) %>% 
+  bind_rows()
+
+plan(sequential)
+
+```
+
+
+**repeat for NMD_pasture**
+
+```{r}
+
+# plan(multiprocess, workers = 4)
+# 
+# # extract raster from NMD for each route
+# Standard_geo_raster_pasture <- 
+# Standard_geo_buffer %>% 
+#   #filter(karta %in% unique(Standard_geo_buffer$karta)[1:10]) %>% 
+#   split(.$karta) %>% 
+#   future_lapply(., function(x) crop(NMD_pasture, x))
+# 
+# plan(multiprocess, workers = 4)
+# 
+# NMD_list_points_pasture <- 
+# future_lapply(Routes, function(x) {
+#   
+#   filter(Standard_geo, karta == x, type == "point") %>%
+#   raster::extract(x = Standard_geo_raster_pasture[[x]], y =  .,
+#                   buffer = 500, cellnumbers = T,  df = T) %>% 
+#     as_tibble() %>% 
+#     mutate(karta = x, position = paste("p", ID, sep = ""))
+#   
+#   
+#   }) %>% 
+#   bind_rows()
+# 
+# 
+# plan(sequential)
+
+```
+
+**repeat for NMD_build_areas**
+```{r}
+# plan(multiprocess, workers = 4)
+# 
+# # extract raster from NMD layer containing build areas for each route
+# Standard_geo_raster_build_areas <- 
+# Standard_geo_buffer %>% 
+#   #filter(karta %in% unique(Standard_geo_buffer$karta)[1:10]) %>% 
+#   split(.$karta) %>% 
+#   future_lapply(., function(x) crop(NMD_build_areas, x))
+# 
+# plan(multiprocess, workers = 4)
+# 
+# NMD_list_build_areas <- 
+# future_lapply(Routes, function(x) {
+#   
+#   filter(Standard_geo, karta == x, type == "point") %>%
+#   raster::extract(x = Standard_geo_raster_build_areas[[x]], y =  .,
+#                   buffer = 500, cellnumbers = T,  df = T) %>% 
+#     as_tibble() %>% 
+#     mutate(karta = x, position = paste("p", ID, sep = ""))
+#   
+#   }) %>% 
+#   bind_rows()
+# 
+# 
+# plan(sequential)
+```
+
+
+**repeat for power lines (NMD_kraft)**
+```{r}
+# plan(multiprocess, workers = 4)
+# 
+# # extract raster from NMD layer containing information about power lines
+# Standard_geo_raster_kraft <- 
+# Standard_geo_buffer %>% 
+#   #filter(karta %in% unique(Standard_geo_buffer$karta)[1:10]) %>% 
+#   split(.$karta) %>% 
+#   future_lapply(., function(x) crop(NMD_kraft, x))
+# 
+# plan(multiprocess, workers = 4)
+# 
+# NMD_list_kraft <- 
+# future_lapply(Routes, function(x) {
+#   
+#   filter(Standard_geo, karta == x, type == "point") %>%
+#   raster::extract(x = Standard_geo_raster_kraft[[x]], y =  .,
+#                   buffer = 500, cellnumbers = T,  df = T) %>% 
+#     as_tibble() %>% 
+#     mutate(karta = x, position = paste("p", ID, sep = ""))
+#   
+# 
+#   }) %>% 
+#   bind_rows()
+# 
+# 
+# plan(sequential)
+```
+
+
+we can test that all dataframes are identical in every position but for the 4th column were teh value for the respective raster at the respective coordinate is stored. 
+
+```{r}
+# objs <- list(NMD_list_points[,-3],
+#              NMD_list_points_pasture[,-3],
+#              NMD_list_build_areas[,-3],
+#              NMD_list_kraft[,-3])
+# 
+# outer(objs, objs, Vectorize(identical))
+# 
+# rm(objs)
+```
+
+as we know the data.frames are identical otherwise, we can merge them by binding the colums 
+
+```{r}
+
+LandUse <- select(NMD_list_points, karta, position, cells)
+
+LandUse <- 
+  LandUse %>% 
+  mutate(NMD_base = NMD_list_points$nmd2018bas_ogeneraliserad_v1_0)
+         # Pasture = NMD_list_points_pasture$NMD_markanv_bete_v1,
+         # Buildings = NMD_list_build_areas$NMD_markanv_anlagda_omr_v1,
+         # Powerlines = NMD_list_kraft$NMD_markanv_kraftledning_v1)
+```
+
+export data
+
+```{r}
+saveRDS(LandUse, here("data", "LandUse_NMD_points_500m.Rds"))
+```
+
+```{r}
+
+# LandUse_combos <- 
+# LandUse %>% 
+#   filter(!is.na(Pasture) | !is.na(Buildings) | !is.na(Powerlines)) %>% 
+#   mutate(combo = paste(NMD_base, Pasture, Buildings, Powerlines, sep = "_")) %>% 
+#   group_by(combo) %>% 
+#   mutate(n = n()) %>% 
+#   ungroup() %>% 
+#   select(NMD_base, Pasture, Buildings, Powerlines, n) %>% 
+#   distinct() %>% 
+#   arrange(desc(n)) %>% 
+#   mutate(NMD_base = NMD_meta[match(NMD_base, NMD_meta$ID),]$Klass) %>% 
+#   mutate(Pasture = NMD_pasture_meta[match(Pasture, NMD_pasture_meta$ID),]$Klass) %>% 
+#   mutate(Buildings = NMD_build_areas_meta[match(Buildings, NMD_build_areas_meta$ID),]$Klass) %>% 
+#   mutate(Powerlines = NMD_kraft_meta[match(Powerlines, NMD_kraft_meta$ID),]$Klass) 
+#   
+#   
+#  View(LandUse_combos %>% arrange(NMD_base, desc(n)))
+
+```
+
+
+
