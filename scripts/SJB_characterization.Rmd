@@ -1,0 +1,145 @@
+---
+title: "SJB_characterization"
+output: html_notebook
+---
+## load libraries
+
+```{r, message = FALSE}
+library(sf)
+library(raster)
+library(dplyr)
+library(tidyr)
+library(here)
+library(future.apply)
+library(readxl)
+```
+
+## load bird routes
+
+```{r}
+Standard_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
+Freecounts_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
+```
+
+## load application data
+
+```{r}
+
+SJB_files <- list.files(here("data", "SJB"), pattern = ".+tif$")
+SJB_raster <- lapply(SJB_files, 
+                    function(x) raster(paste(here("data", "SJB"), x, sep = "/")))
+
+
+gsub("(\\w+).tif", "\\1", SJB_files) %>% 
+  paste("SJB", . , sep = "_") -> names(SJB_raster)
+
+```
+
+
+**make buffer for raster extraction** 
+```{r}
+
+# make a 1km buffer around each route
+Standard_geo_buffer <- 
+  Standard_geo %>% 
+  group_by(karta) %>% 
+  summarise() %>% 
+  st_convex_hull() %>% 
+  st_buffer(1000) 
+
+```
+
+
+**crop list of raster for SJB data**
+
+we make a list of length 7 for the 7 years of SJB application data we have. Each entry is itself a list 
+```{r}
+plan(multiprocess, workers = 4)
+
+# extract raster from SJB for each route for each year
+Buffer_list <- 
+  Standard_geo_buffer %>% 
+  split(.$karta) 
+
+SJB_Raster_list <- 
+lapply(SJB_raster, function(x) {
+  future_lapply(Buffer_list, function(y) crop(x, y))
+  })
+
+plan(sequential)
+```
+
+
+```{r}
+# vector of route names 
+Routes <- names(SJB_Raster_list[[1]])
+
+# extract rastervalues in 500 m buffer around points for all routes
+
+plan(multiprocess, workers = 4)
+
+options(future.globals.maxSize= 943718400)
+
+SJB_point_buffer_list <- 
+lapply(SJB_Raster_list, function(z){
+  
+  future_lapply(Routes, function(x) {
+    
+    filter(Standard_geo, karta == x, type == "point") %>%
+  raster::extract(x = z[[x]], y =  ., buffer = 500, cellnumbers = T, 
+                  df = T) %>%
+    as_tibble() %>% 
+    mutate(karta = x, position = paste("p", ID, sep = ""))
+  
+  }) 
+  
+})
+
+```
+
+
+```{r}
+SJB_point_buffer_list_dfs <- lapply(SJB_point_buffer_list, bind_rows)
+
+LandUse_SJB <- as_tibble(SJB_point_buffer_list_dfs[[1]]) %>% 
+  select(karta, position, cells)
+
+LandUse_SJB <- 
+  LandUse_SJB %>% 
+  mutate(SJB_2012 = SJB_point_buffer_list_dfs[[1]][[3]],
+         SJB_2013 = SJB_point_buffer_list_dfs[[2]][[3]],
+         SJB_2014 = SJB_point_buffer_list_dfs[[3]][[3]],
+         SJB_2015 = SJB_point_buffer_list_dfs[[4]][[3]],
+         SJB_2016 = SJB_point_buffer_list_dfs[[5]][[3]],
+         SJB_2017 = SJB_point_buffer_list_dfs[[6]][[3]],
+         SJB_2018 = SJB_point_buffer_list_dfs[[7]][[3]])
+```
+
+export data
+
+```{r}
+saveRDS(LandUse_SJB, here("data", "LandUse_SJB_points_500m.Rds"))
+```
+
+```{r}
+
+SJB_meta <- 
+  read_xlsx(here("data", "crop_codes_english.xlsx")) %>% 
+  filter(year == 2012) %>% 
+  select(-Swedish)
+
+LandUse_SJB %>% 
+  filter_at(vars(starts_with("SJB_")), any_vars(!is.na(.))) %>% 
+  mutate_at(vars(starts_with("SJB_")), function(x)  SJB_meta[match(x, SJB_meta$`Landuse code`), ]$English) %>%
+  select(starts_with("SJB")) %>% 
+  group_by_at(vars(starts_with("SJB"))) %>% 
+  mutate(n = n()) %>% 
+  distinct() %>% 
+  arrange(desc(n)) %>% 
+  ungroup() %>% 
+  mutate(n_prct = cumsum(signif(n/sum(n)*100,2))) %>% 
+  View
+```
+
+
+
