@@ -12,13 +12,14 @@ library(here)
 library(readr)
 library(readxl)
 library(stringr)
+library(vegan)
 ```
 
 ### read in LandUse type from different source Raster
 ```{r}
 LandUse_NMD <- readRDS(here("data", "LandUse_NMD_points_500m.Rds"))
 LandUse_SJB <- readRDS(here("data", "LandUse_SJB_points_500m.Rds"))
-LandUse_TUVA <- readRDS(here("data", "LandUse_TUVA_points_500m.Rds"))
+#LandUse_TUVA <- readRDS(here("data", "LandUse_TUVA_points_500m.Rds"))
 ```
 
 ### read in metadata
@@ -26,7 +27,7 @@ LandUse_TUVA <- readRDS(here("data", "LandUse_TUVA_points_500m.Rds"))
 ```{r}
 # metadata
 NMD <- raster(here("data", "NMD", "nmd2018bas_ogeneraliserad_v1_0.tif")) 
-NMD_pasture <- raster(here("data", "NMD_Tillaggsskikt_Markanvandning", "NMD_markanv_bete_v1.tif"))
+#NMD_pasture <- raster(here("data", "NMD_Tillaggsskikt_Markanvandning", "NMD_markanv_bete_v1.tif"))
 
 
 # NMD_build_areas <- raster(here("data", "NMD_Tillaggsskikt_Markanvandning", "NMD_markanv_anlagda_omr_v1.tif"))
@@ -40,12 +41,12 @@ NMD@data@attributes %>%
   mutate(Klass = iconv(as.character(Klass), "latin1")) %>% 
   rename(NMD_base = ID)
 
-NMD_pasture_meta <- 
-  NMD_pasture@data@attributes %>% 
-  as.data.frame() %>% 
-  dplyr::select(-Opacity) %>% 
-  filter(Klass != "") %>% 
-  mutate(Klass = iconv(as.character(Klass), "latin1"))
+# NMD_pasture_meta <- 
+#   NMD_pasture@data@attributes %>% 
+#   as.data.frame() %>% 
+#   dplyr::select(-Opacity) %>% 
+#   filter(Klass != "") %>% 
+#   mutate(Klass = iconv(as.character(Klass), "latin1"))
 
 # NMD_build_areas_meta <- 
 #   NMD_build_areas@data@attributes %>% 
@@ -84,7 +85,6 @@ LandUse_SJB %>%
 # n_mean average prct of LandUse among Buffer were LandUse occures
 # occurence_prct proportion of Buffer with LandUse
 
-
 LandUse_SJB_max <- 
 LandUse_SJB_filt %>% 
   dplyr::select(karta, position, starts_with("SJB")) %>% 
@@ -96,8 +96,11 @@ LandUse_SJB_filt %>%
   summarize(max_use_prct = max(n),
             mean_use_prct = round(mean(n),2),
             occurence_prct = round(100*(n()/46336),2)) %>% #724 routes * 8 points * 8 years
-  arrange(desc(max_use_prct)) %>% 
-  left_join(SJB_meta) 
+  arrange(desc(max_use_prct)) 
+
+#LandUse_SJB_max <- 
+LandUse_SJB_max %>%
+  full_join(SJB_meta) 
 
 LandUse_SJB_max %>% 
   mutate(English = str_trunc(English, 25, "right"))
@@ -122,7 +125,7 @@ LandUse_SJB_groups <-
     Landuse_code %in% c(1,3,4,7,8,12,20,22) ~ "Winter_cereal",
     Landuse_code %in% c(2,5,9,21,23,30,31) ~ "Spring_cereal",
     Landuse_code %in% c(60,62,69) ~ "Fallow",
-    Landuse_code %in% c(46,47,32,35) ~ "Tuber_Root",
+    Landuse_code %in% c(46,47,32,35) ~ "Tuber_Root", #45? <- add 
     Landuse_code %in% c(65,67,68) ~ "Woody_crops",
     TRUE ~ "Other"))
 
@@ -139,7 +142,7 @@ LandUse_SJB_rec <-
 Crop_rotations <- 
 LandUse_SJB_rec %>% 
   filter_at( vars(starts_with("SJB_")), function(x) !is.na(x)) %>% 
-  select(starts_with("SJB")) 
+  select(starts_with("SJB")) %>%  
   group_by_all() %>% 
   summarize(n = n()) %>% 
   ungroup %>% 
@@ -167,14 +170,25 @@ Crop_rotations %>%
 ```
 
 
-## summarize Landuse classes
+## recode Landuse classes from NMD
+-> we do not distinguish between forest on wetlan and forest on dryland
+-> we do not distinguish between 
+51  Exploaterad mark, byggnad		
+52	Exploaterad mark, ej byggnad eller väg/järnväg		
+53	Exploaterad mark, väg/järnväg
 
 ### NMD bassikt
 
 ```{r}
 
-LandUse_max <- 
+LandUse_NMD_rec <- 
 LandUse_NMD %>% 
+  mutate(NMD_base = case_when(
+    NMD_base %in%  c(121:128) ~ NMD_base - 10,
+    NMD_base %in%  c(52,53) ~ 51,
+    TRUE ~ NMD_base))
+  
+LandUse_NMD_rec %>% 
   dplyr::select(karta, position, NMD_base) %>% 
   group_by(karta, position, NMD_base) %>% 
   summarize(n = n()) %>%
@@ -186,105 +200,176 @@ LandUse_NMD %>%
   arrange(desc(occurence_prct)) %>%
   left_join(NMD_meta) %>% 
   select(1,5,2:4) %>% 
-  mutate(Klass = str_trunc(Klass, 25, "right"))
-
-LandUse_max %>% 
+  mutate(Klass = str_trunc(Klass, 25, "right")) %>% 
   arrange(NMD_base)
 
 ```
 
-### NMD_buildings
+## join SJB data to NMD data
 
 ```{r}
+LandUse_joint <- 
+  cbind(LandUse_NMD_rec, select(LandUse_SJB_rec, starts_with("SJB")))
 
-LandUse_Buildings_max <- 
-LandUse_NMD %>% 
-  dplyr::select(karta, position, Buildings) %>% 
-  na.omit() %>% 
-  group_by(karta, position, Buildings) %>% 
-  summarize(n = n()) %>%
-  mutate(n = round(100*n/7853, 2)) %>% 
-  group_by(Buildings) %>% 
-  summarize(max_use_prct = max(n),
-            mean_use_prct = round(mean(n),2),
-            occurence_prct = round(100*(n()/5792),2)) %>%  #724 routes * 8 points
-  arrange(desc(occurence_prct)) %>%
-  left_join(NMD_build_areas_meta) %>% 
-  mutate(Klass = str_trunc(Klass, 25, "right")) %>% 
-  select(1,6,2:5)
-
-LandUse_Buildings_max 
+         
 ```
 
-## LandUse combos
++ NMDbase landuse class `3 (Åkermark)` is filled in by data from SJB
++ `Pasture` is dropped in favor of SJB
++ SJB Landuse class `Woody_crops` is replaced by class `115	Triviallövskog (utanför våtmark)`
++ `Buildings` and `Powerlines` are dropped
 
-### full combinations
+
+## drop columns
+```{r}
+
+LandUse_joint <- 
+LandUse_joint %>% 
+  select(-Pasture, -Buildings, -Powerlines)
+  
+```
+
+## recode SJB to numeric
 
 ```{r}
-LandUse_combos <- 
-LandUse_NMD %>% 
-  cbind(., select(LandUse_SJB_rec, starts_with("SJB_"))) %>% 
-  #filter(NMD_base == 3) %>% 
-  select(-c(1:5)) %>% 
-  gather(year, Landuse, -NMD_base, -Pasture, -Buildings, -Powerlines) %>% 
-  select(-year) %>% 
-  group_by_all() %>% 
-  summarize(n = n()) %>% 
-  ungroup %>% 
-  left_join(NMD_build_areas_meta) %>% 
-  mutate(Klass = str_trunc(Klass, 25, "right")) %>% 
-  mutate(Buildings = Klass) %>% 
-  select(-Klass, -COUNT) %>% 
-  left_join(NMD_meta) %>% 
-  mutate(Klass = str_trunc(Klass, 25, "right")) %>% 
-  mutate(NMD_base = Klass) %>% 
-  select(-Klass) %>% 
-  arrange(desc(n)) %>% 
-  mutate(n_prct = 100*round(n/sum(n),4))
+LandUse_meta <- 
+  tibble(LandUse = na.omit(unique(LandUse_SJB_rec$SJB_2012))) %>% 
+  mutate(LandUse_code = 300+1:n())
 
-LandUse_combos_all <-   
-LandUse_combos %>% 
-  filter(! is.na(Pasture & is.na(Buildings) & is.na(Powerlines & is.na(Landuse)))) %>% 
-  mutate(n_prct = 100*round(n/sum(n),4)) %>% 
-  group_by(NMD_base) %>% 
-  mutate(n_group = sum(n)) %>% 
+LandUse_meta <- 
+NMD_meta %>% 
+  filter(NMD_base %in% unique(LandUse_NMD_rec$NMD_base)) %>% 
+  rename(LandUse = Klass,
+         LandUse_code = NMD_base) %>% 
+  bind_rows(LandUse_meta)
+
+LandUse_meta <- 
+LandUse_meta %>% 
+  mutate(LandUse = gsub("(\\w+)\\s\\(utanför våtmark\\)", "\\1", LandUse),
+         LandUse = gsub("(\\w+), byggnad", "\\1", LandUse),
+         LandUse = gsub("\\s", "_", LandUse))
+
+LandUse_meta
+```
+
+```{r}
+
+LandUse_joint <- 
+  LandUse_joint %>% 
+  mutate_at(vars(starts_with("SJB")), function(x) LandUse_meta$LandUse_code[match(x, LandUse_meta$LandUse)])
+
+
+filter(LandUse_joint, NMD_base == 3)
+```
+
+## recode columns for all years
+
+```{r}
+
+LandUse_joint <- 
+  LandUse_joint %>% 
+  mutate_at(vars(starts_with("SJB")),
+            funs(case_when(is.na(.) ~ NMD_base,
+                           . == 308 ~ 115,
+                           TRUE ~ .)))
+            
+
+
+filter(LandUse_joint, NMD_base == 3)
+
+prct_3 <- 
+LandUse_joint %>% 
+  group_by(karta, position) %>% 
+  summarise_at(vars(starts_with("SJB")), function(x) sum(x == 3)/n())
+
+prct_3 %>% 
   ungroup() %>% 
-  arrange(desc(n_group), desc(n))
+  filter(SJB_2012 == max(SJB_2012))
 
-LandUse_combos_all
+apply(prct_3[,3:ncol(prct_3)], 2, function(x) quantile(x, seq(0.9,1,0.01)))*100
 
 ```
 
-### combinatinos with SJB
+Not all pixel that are coded `3 Åkermark`in the NMD are covered by the SJB. It's seldom much (see % in each circle above, never more than 5% of total area in 99% of cases), but we need to deal with it. 
+
+we declare the remaining `Åkermark` as `Övrig_öppen_mark_med_vegetation`. 
 
 ```{r}
-LandUse_combos_SJB <- 
-LandUse_combos_all %>% 
-  select(-Pasture, -Buildings, -Powerlines) %>% 
-  filter(!is.na(Landuse)) %>% 
-  group_by(NMD_base, Landuse) %>% 
-  summarize(n = sum(n)) %>%
-  ungroup() %>% 
-  mutate(n_prct = round(n/sum(n),4)*100) %>% 
-  arrange(desc(n))
+LandUse_joint <- 
+LandUse_joint %>% 
+  mutate_at(vars(starts_with("SJB")), funs(
+    case_when(. == 3 ~ 42,
+              TRUE ~ .)))
 
-LandUse_combos_SJB
+LandUse_joint_sum <- 
+LandUse_joint %>% 
+  select(-NMD_base, -cells) %>% 
+  gather(year, LandUse_code, -karta, -position) %>% 
+  group_by(karta, position, LandUse_code, year) %>% 
+  summarize(m2 = n()*100)
+
+ 
 ```
 
-### combinations with Buildings Layer
+
+
+```{r}
+LandUse_joint_sum <- 
+LandUse_joint_sum %>%
+  ungroup() %>% 
+  mutate(LandUse = LandUse_meta[match(LandUse_joint_sum$LandUse_code,                                   LandUse_meta$LandUse_code),]$LandUse)
+
+LandUse_joint_sum %>% 
+  select(-LandUse_code) %>% 
+  spread(LandUse, m2, fill = 0)
+
+```
+
+LandUse code 0 is for pixel outside NMD. I need to deal with them.
+
+```{r}
+Routes_not_covered <- 
+LandUse_joint_sum %>% 
+  ungroup() %>% 
+  group_by(karta, position) %>% 
+  summarise(Excl = TRUE %in% is.na(LandUse)) %>% #pixels outside NMD in buffer?
+  group_by(karta) %>% 
+  filter(TRUE %in% Excl) %>% 
+  mutate(N_Excl = sum(Excl))
+
+Routes_not_covered %>%
+  summarise(N_Excl = sum(Excl)) 
+  
+
+```
+
+I exclude all routes which have >= 4 points that are not fully covered by the NMD. 
+For the remaining routes I exclude only the buffers with missing data.
 
 ```{r}
 
-LandUse_combos_Build <- 
-LandUse_combos_all %>% 
-  select(-Pasture, -Landuse, -Powerlines) %>% 
-  filter(!is.na(Buildings)) %>% 
-  group_by(NMD_base, Buildings) %>% 
-  summarize(n = sum(n)) %>%
-  ungroup() %>% 
-  mutate(n_prct = round(n/sum(n),4)*100) %>% 
-  arrange(desc(n))
+LandUse_joint_sum <- 
+LandUse_joint_sum %>%  
+  filter( !karta %in% filter(Routes_not_covered, N_Excl >= 4)$karta) %>% 
+  filter( !paste(karta, position) %in% 
+            paste(filter(Routes_not_covered, N_Excl <4 & Excl)$karta,
+                  filter(Routes_not_covered, N_Excl <4 & Excl)$position)) 
 
-LandUse_combos_Build
 ```
+
+
+```{r}
+
+LandUse_wide <-
+  LandUse_joint_sum %>% 
+  select(-LandUse_code) %>% 
+  spread(LandUse, m2, fill = 0) 
+  
+```
+
+
+```{r}
+write_csv(LandUse_wide, here("data", "LandUse_joint.csv"))
+```
+
 
