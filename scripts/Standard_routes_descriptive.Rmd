@@ -1,0 +1,335 @@
+---
+title: "Standard routes descriptive"
+output: html_notebook
+---
+
+load libraries
+```{r, message = FALSE}
+library(sf)
+library(readr)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(here)
+library(stringr)
+library(forcats)
+```
+
+load data
+
+```{r}
+Standard_lines <- read_tsv(here("data", "Standard_routes_lines.txt"))
+Standard_points <- read_tsv(here("data", "Standard_routes_points.txt"))
+Standard_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
+```
+
+
+
+### how many routes have been counted each year
+
+```{r}
+
+Standard_points %>% 
+  select(yr, karta) %>% 
+  distinct() %>% 
+  group_by(yr) %>% 
+  mutate(n = n()) %>% 
+  ggplot(aes(x = yr, y = n))+
+  geom_line()+
+  geom_point()
+
+```
+
+```{r}
+
+counted_routes <- 
+Standard_lines %>% 
+  select(yr, karta) %>% 
+  distinct() %>% 
+  arrange(karta, yr) %>% 
+  group_by(karta) %>% 
+  mutate(years_counted = 1:n()) %>% 
+  right_join(filter(Standard_geo, position == "p1"), .) %>% 
+  rename(geometry = geom) %>% 
+  ggplot(aes(colour = years_counted))+
+  geom_sf(shape =15, size = 0.2)+
+  facet_wrap(~yr, ncol = 8)+
+  theme_minimal()+
+  theme(axis.text.x=element_blank(),
+        axis.ticks.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),)+
+  scale_colour_viridis_c()
+
+ggsave(here("plots", "counted_routes.pdf"), width = 10, height = 8)
+
+counted_routes
+
+```
+
+
+### explore rarity (using the last 10 years)
+
+#### average number of observations by year for each species
+```{r}
+av_bird_abundance_p <-
+  Standard_points %>% 
+  filter(yr > 2008) %>% 
+  group_by(karta) %>% 
+  mutate(years_counted = length(unique(yr))) %>% 
+  group_by(karta, lat6, englishname) %>% 
+  summarise(sum_by_route = sum(abundance), years_counted = unique(years_counted)) %>% 
+  mutate(average_abundance = sum_by_route / years_counted) %>% #how often is the species observed on average per year on each route
+  group_by(lat6, englishname) %>% 
+  summarise(sum_av_abundance = sum(average_abundance)) %>%  #how often is the species observed on average per year in Sweden
+  arrange(desc(sum_av_abundance)) %>% 
+  ungroup() %>% 
+  mutate(rank = 1:n()) 
+
+av_bird_abundance_l <-
+  Standard_lines %>% 
+  filter(yr > 2008) %>% 
+  group_by(karta) %>% 
+  mutate(years_counted = length(unique(yr))) %>% 
+  group_by(karta, lat6, englishname) %>% 
+  summarise(sum_by_route = sum(abundance), years_counted = unique(years_counted)) %>% 
+  mutate(average_abundance = sum_by_route / years_counted) %>% #how often is the species observed on average per year on each route
+  group_by(lat6, englishname) %>% 
+  summarise(sum_av_abundance = sum(average_abundance)) %>%  #how often is the species observed on average per year in Sweden
+  arrange(desc(sum_av_abundance)) %>% 
+  ungroup() %>% 
+  mutate(rank = 1:n()) 
+
+av_bird_abundance <- 
+av_bird_abundance_l %>% 
+  rename(sum_av_abundance_l = sum_av_abundance) %>% 
+  select(-rank) %>% 
+  left_join(av_bird_abundance_p) %>% 
+  gather(type, abundance, -rank, -lat6, -englishname) %>% 
+  mutate(type = case_when(type == "sum_av_abundance_l" ~ "linecounts",
+                          type == "sum_av_abundance" ~ "pointcounts"))
+
+spec_rank_plot <- 
+  av_bird_abundance %>% 
+  ggplot(aes(x= rank, y = abundance, label = englishname))+
+  geom_point(aes(colour = type))+
+  geom_hline(yintercept = c(1,10), colour = "darkred", linetype = "dashed")+
+  geom_text(data = tibble(rank = 10, 
+                          abundance = c(1.5,15),
+                          label = c("1 observation per year in Sweden",
+                                               "10 observations per year in Sweden")),
+            aes(x = rank, label = label),
+            hjust = "left")+
+  scale_y_log10()+
+  theme_minimal()+
+  labs(y = "average observations of species per year (2009 - 2018)")+
+  scale_color_brewer(palette = "Set1")
+
+ggsave(here("plots", "species_ranks.pdf"), height = 6, width = 8)
+
+ggplotly(spec_rank_plot, tooltip = c("englishname"))
+```
+
+#### average number and proportion of routes on which each species is observed
+```{r}
+av_bird_presence_l <- 
+ Standard_lines %>% 
+  filter(yr > 2008) %>% 
+  group_by(karta, lat6, englishname, yr) %>% 
+  summarize(presence = sum(abundance)) %>% # sum over all lines
+  mutate(presence = as.numeric(presence > 0)) %>% #make abundance p/a
+  group_by(yr) %>% 
+  mutate(routes_counted = length(unique(karta))) %>% 
+  group_by(lat6, englishname, yr) %>% 
+  summarise(n_routes = sum(presence),
+            routes_counted = unique(routes_counted)) %>% 
+  mutate(p_routes = n_routes / routes_counted *100) %>% 
+  group_by(lat6, englishname) %>% 
+  summarize(n_routes = mean(n_routes),
+            p_routes = mean(p_routes)) %>% 
+  ungroup() %>% 
+  arrange(desc(p_routes)) %>% 
+  mutate(rank = 1:n())
+
+av_bird_presence_p <- 
+ Standard_points %>% 
+  filter(yr > 2008) %>% 
+  group_by(karta, lat6, englishname, yr) %>% 
+  summarize(presence = sum(abundance)) %>% # sum over all lines
+  mutate(presence = as.numeric(presence > 0)) %>% #make abundance p/a
+  group_by(yr) %>% 
+  mutate(routes_counted = length(unique(karta))) %>% 
+  group_by(lat6, englishname, yr) %>% 
+  summarise(n_routes = sum(presence),
+            routes_counted = unique(routes_counted)) %>% 
+  mutate(p_routes = n_routes / routes_counted *100) %>% 
+  group_by(lat6, englishname) %>% 
+  summarize(n_routes = mean(n_routes),
+            p_routes = mean(p_routes)) %>% 
+  ungroup() %>% 
+  arrange(desc(p_routes)) %>% 
+  mutate(rank = 1:n())
+
+av_bird_presence <- 
+av_bird_presence_l %>% 
+  rename(p_routes_l = p_routes) %>% 
+  select(-rank, -n_routes) %>% 
+  left_join(av_bird_presence_p) %>% 
+  gather(type, proportion, -rank, -lat6, -englishname, -n_routes) %>% 
+  mutate(type = case_when(type == "p_routes_l" ~ "linecounts",
+                          type == "p_routes" ~ "pointcounts"))
+
+spec_prev_plot <-
+  av_bird_presence %>% 
+  ggplot(aes(x = rank, y = proportion, label = englishname))+
+  geom_point(aes(colour = type))+
+  geom_hline(yintercept = c(10,1), colour = "darkred", linetype = "dashed")+
+  geom_text(data = tibble(rank = 10, 
+                          proportion = c(1.5,0.15),
+                          label = c("observed on 10% of the routes on average",
+                                    "observed on 1% of the routes on average")),
+            aes(x = rank, label = label),
+            hjust = "left")+
+  scale_y_log10()+
+  theme_minimal()+
+  labs(y = "average proportion of routes on where \n the species has been observed (2009 - 2018)")+
+  scale_color_brewer(palette = "Set1")
+
+ggsave(here("plots", "species_prevalence.pdf"), height = 6, width = 8)
+
+ggplotly(spec_prev_plot, tooltip = c("englishname"))
+
+  
+```
+
+#### abundance versus prevalence
+```{r}
+abun_prop <- 
+left_join(select(av_bird_presence, -rank), 
+          select(av_bird_abundance, -rank)) %>% 
+  filter(type == "linecounts") %>% 
+  mutate(proportion_l = signif(proportion, 2)) %>% 
+  ggplot(aes(x = abundance, y= proportion, 
+             label = englishname, label2 = proportion_l)) + 
+  geom_point()+
+  scale_x_log10()+
+  scale_y_log10()+
+  theme_minimal()
+  
+
+ ggplotly(abun_prop, tooltip = c("englishname", "proportion_l"))
+
+```
+
+#### detecting flocking species
+
+```{r}
+cv_abund <- 
+Standard_lines %>% 
+  group_by(art, englishname) %>% 
+  summarise(n_sites = sum(abundance > 0),
+            sum_abund = sum(abundance)) %>%
+  filter(n_sites > 100) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = sum_abund, y = n_sites, label = englishname))+
+  geom_point()+
+  theme_minimal()+
+  scale_x_log10()+
+  scale_y_log10()
+  
+
+ggplotly(cv_abund, tooltip = c("englishname"))
+
+```
+
+
+#### rare species 
+
+species that have been observed on average ≤ 1 times in the last 10 years in Sweden
+
+```{r}
+
+av_bird_abundance %>% 
+  filter(abundance <=1) %>% 
+  right_join(distinct(dplyr::select(Standard_lines, lat6, genus, species)), .)
+
+
+```
+
+#### overcount on line 8?
+
+Does the observers overcount birds on line 8?
+
+The bird surveillors are asked not to count birds twice between different transects. In theory this leads to that the birders might be careful not to re-count the birds they counted at the end of the previous line, when starting a new line. However, at the end of the route (end of line 8), the birders will re-encounter birds that they might have counted a few hours earlier at the beginning of line 1. Therefore, on could expect to find a higher mean abundance on l8.
+
+```{r}
+
+ Standard_lines %>% 
+ filter(art == "247") %>% #Willow warbler
+  group_by(karta, position) %>% 
+  summarise(abundance = sum(abundance)) %>% 
+  {
+  ggplot(., aes(x = position, y = abundance))+
+  geom_point(position = position_jitter(width = 0.4), alpha = 0.2)+
+  stat_summary(geom = "point", fun.y = "median", aes(group = position), colour = "red")+
+  geom_hline(yintercept = median(.$abundance))+
+  theme_bw()
+  }
+  
+ 
+
+```
+
+
++ export of bird data summary
+
+```{r}
+
+Bird_summary <- 
+av_bird_presence %>% 
+  select(-rank) %>% 
+  left_join(av_bird_abundance) %>% 
+  select(-rank) 
+
+write_csv2(Bird_summary, here("data", "Bird_stats.csv"))
+```
+
+### proportion of points counted
+
+```{r}
+
+# 8 routes  have never been counted (because they are in the ocean or very remote / difficult terrain)
+routes_not_counted <- unique(Standard_geo$karta)[which(! unique(Standard_geo$karta) %in% Standard_points$karta)]
+
+points_not_counted <- 
+Standard_points %>% 
+  group_by(karta, position, yr) %>% 
+  summarize(abundance = sum(abundance)) %>%
+  group_by(karta, position) %>% 
+  summarize(abundance = median(abundance)) %>% 
+  filter(abundance == 0) %>% 
+  select(-abundance) %>% 
+  mutate(nevercounted = TRUE) %>% 
+  left_join(filter(Standard_geo, type == "point"), .) %>% 
+  mutate(nevercounted = ! is.na( nevercounted)) %>% 
+  mutate(nevercounted = case_when(karta %in% routes_not_counted ~ TRUE,
+                                  TRUE ~ nevercounted))
+
+lines_not_counted <- 
+  Standard_lines %>% 
+  group_by(karta, position) %>% 
+  summarize(prop_counted = mean(prop_counted, na.rm = TRUE)) %>% 
+  mutate(prop_counted = round(prop_counted)) %>% 
+  left_join(filter(Standard_geo, type == "line"), .) %>% 
+  mutate(prop_counted = case_when(karta %in% routes_not_counted ~ 0,
+                                  TRUE ~ prop_counted))
+
+
+
+write_sf(points_not_counted, here("data", "Points_counted.gpkg"))
+write_sf(lines_not_counted, here("data", "Lines_counted.gpkg"))
+  
+```
+
