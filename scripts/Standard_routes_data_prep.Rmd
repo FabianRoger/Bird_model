@@ -139,6 +139,22 @@ Standard_data %>%
   gather(position, value, -art, -yr, -datum, -karta, -persnr) %>% 
   spread(art, value) %>% 
   arrange(karta, yr)
+
+pnc <- 
+Standard_data_meta %>% 
+    filter(grepl("p", position)) %>% 
+    select(-`999`) %>% 
+    rename(timepoint = `000`) %>% 
+  filter(timepoint == 0) 
+
+Standard_routes_points %>% 
+  filter(paste(karta, yr, position) %in% paste(pnc$karta, pnc$yr, pnc$position)) %>% 
+  group_by(karta, yr, position, timepoint) %>% 
+  summarise(abundance = sum(abundance)) %>% 
+  filter(abundance > 0) %>% 
+  arrange(abundance)
+
+  
 ```
 
 ### point routes
@@ -146,30 +162,31 @@ Standard_data %>%
 cleaning time for pointcounts
 ```{r}
 
-# I recode missing values (0 , 99) as NA
-# I correct impossible times by assuming that the most likly misstake is a flip in the digits
+# I recode missing values (0 , 99) as NA or missing
+# I correct impossible times by assuming that the most likely misstake is a flip in the digits
 
 Standard_data_meta_p <- 
   Standard_data_meta %>% 
-    filter(grepl("p", position)) %>% 
-    select(-`999`) %>% 
-    rename(timepoint = `000`) %>% 
-    mutate(timepoint = case_when(timepoint == 9110 ~ 911, #correct data entry error
-                                 timepoint == 560 ~ 506, #correct data entry error
-                                 timepoint == 973 ~ 937, #correct data entry error
-                                 timepoint == 574 ~ 547, #correct data entry error
-                                 timepoint == 368 ~ 638, #correct data entry error
-                                 timepoint == 9110 ~ 911, #correct data entry error
-                                 timepoint == 0 ~ NA_real_, #recode missing value
-                                 timepoint == 999 ~ NA_real_, #recode missing value 
-                                 TRUE ~ timepoint)) %>% 
-    mutate(timepoint = case_when(nchar(as.character(timepoint)) == 3 ~
-                                   paste("0", timepoint, sep = ""),
-                                 nchar(as.character(timepoint)) == 4 ~
-                                   as.character(timepoint))) %>% 
-    mutate(timepoint = gsub("(\\d\\d)(\\d\\d)", "\\1:\\2", timepoint)) %>%
-    mutate(datum = gsub("(\\d{4})(\\d{2})(\\d{2})", "\\1:\\2:\\3", datum)) 
-
+  filter(grepl("p", position)) %>% 
+  select(-`999`) %>% 
+  rename(timepoint = `000`) %>% 
+  # mutate(counted = case_when(timepoint == 0 ~ "no",
+  #                            TRUE ~ "yes")) %>% 
+  mutate(timepoint = case_when(timepoint == 9110 ~ 911, #correct data entry error
+                               timepoint == 560 ~ 506, #correct data entry error
+                               timepoint == 973 ~ 937, #correct data entry error
+                               timepoint == 574 ~ 547, #correct data entry error
+                               timepoint == 368 ~ 638, #correct data entry error
+                               timepoint == 9110 ~ 911, #correct data entry error
+                               timepoint == 0 ~ NA_real_, #recode missing value indicating that point has not been counted
+                               timepoint == 999 ~ NA_real_, #recode missing value 
+                               TRUE ~ timepoint)) %>% 
+  mutate(timepoint = case_when(nchar(as.character(timepoint)) == 3 ~
+                                 paste("0", timepoint, sep = ""),
+                               nchar(as.character(timepoint)) == 4 ~
+                                 as.character(timepoint))) %>% 
+  mutate(timepoint = gsub("(\\d\\d)(\\d\\d)", "\\1:\\2", timepoint)) %>%
+  mutate(datum = gsub("(\\d{4})(\\d{2})(\\d{2})", "\\1:\\2:\\3", datum)) 
 ```
 
 
@@ -200,7 +217,7 @@ filter(Standard_data, ! art %in% c("000", "999")) %>% # filter out non-species c
   gather(position, abundance, -karta, -yr, -art) %>% 
   left_join(select(species_codes, art, englishname, latin, genus, species, lat6)) %>% 
   left_join(Standard_data_meta_p) %>% 
-  select(karta, yr, persnr, datum, timepoint, position, art, abundance, englishname, latin, genus, species, lat6) %>% 
+  select(karta, yr, persnr, datum, timepoint, position,counted, art, abundance, englishname, latin, genus, species, lat6) %>% 
   mutate_if(is.numeric, as.integer)
 
 write_tsv(Standard_points, here("data", "Standard_routes_points.txt"))
@@ -210,7 +227,7 @@ write_tsv(Standard_points, here("data", "Standard_routes_points.txt"))
 
 ### line routes
 
-cleaning time for pointcounts
+cleaning time for line counts
 ```{r}
 Standard_data_meta_l <- 
   Standard_data_meta %>% 
@@ -233,6 +250,18 @@ Standard_data_meta_l <-
 
 Standard_data_meta_l
 ```
+
+## correct species codes
+there are some 
+
+```{r}
+species_codes %>% 
+  filter(art %in% Standard_data$art) %>% 
+  select(latin, genus, species) %>% 
+  filter(latin != paste(genus, species))
+```
+
+
 
 join and export metadata, count data and species names
 ```{r}
