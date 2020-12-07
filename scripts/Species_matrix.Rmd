@@ -14,40 +14,59 @@ library(sf)
 
 ```{r, eval = F}
 Standard_routes_points <- read_tsv(here("data", "Standard_routes_points.txt"))
+Standard_routes_lines <- read_tsv(here("data", "Standard_routes_lines.txt"))
 Bird_summary <-  read_csv2(here("data", "Bird_stats.csv"))
 Points_geo <- st_read(here("data", "Points_counted.gpkg"))
+Lines_geo <- st_read(here("data", "Lines_counted.gpkg"))
+
 ```
+
+Jönköping study region
+```{r}
+JKP_karta <- readRDS(here("data", "JKP_karta.RDS"))
+
+Standard_routes_points <- Standard_routes_points %>% filter(karta %in% JKP_karta)
+Standard_routes_lines <- Standard_routes_points %>% filter(karta %in% JKP_karta)
+Points_geo <- Points_geo %>% filter(karta %in% JKP_karta) 
+Lines_geo <- Lines_geo %>% filter(karta %in% JKP_karta) 
+```
+
+
+# Point counts
 
 ## filtering birds
 
-`Bird_summary` gives the average proportion of routes on which a species is encountered per year as well as the average abundace across all routes. 
-The statistic is calculated for point and linecount separately and based on the years 2008 - present. 
+`Bird_summary` gives the average proportion of routes on which a species is encountered per year as well as the average abundance across all routes. 
+The statistic is calculated for point and line-counts separately and based on the years 2008 - present. 
 
-species that are observed on **less than 1% of routes per year** on average
+species that are observed on **less than 5% of routes per year** on average (across the studyregion)
 ```{r}
 Bird_summary %>% 
-  filter(type == "pointcounts") %>% 
-  filter(proportion < 1)
+  #filter(type == "pointcounts") %>% 
+  filter(type == "linecounts") %>% 
+  filter(proportion < 5)
 ```
 
-species of which **less than 10 individuals per year** are observed on average
+species of which **less than 5 individuals per year** are observed on average (across the study region)
 
 ```{r}
 
 Bird_summary %>% 
-  filter(type == "pointcounts") %>% 
-  filter(abundance < 10)
+  #filter(type == "pointcounts") %>% 
+  filter(type == "linecounts") %>% 
+  filter(abundance < 5)
 
 ```
 
-List of birds that are observed with either less than 10 individuals or on less than 5 routes. 
+List of birds that are observed with either less than 5 individuals or on less than 5% routes (across Sweden)
 
 ```{r}
 
 rare_birds <- 
 Bird_summary %>% 
-  filter(type == "pointcounts") %>% 
-  filter(abundance < 10 | proportion < 1) %>% 
+  #filter(type == "pointcounts") %>% 
+  filter(type == "linecounts") %>% 
+  filter(abundance < 5 | proportion < 5) %>% 
   pull(englishname)
 
 sort(rare_birds)  
@@ -89,7 +108,7 @@ non_target = c(gulls,
 
 list of birds to exclude
 
-(we exclude 143 out of 264 species (54%) and keep 121 species)
+(we exclude 115 out of 181 species in the study region (63%) and keep 115 species)
 ```{r}
 
 exclude <- union(rare_birds, non_target)
@@ -100,8 +119,13 @@ sort(exclude)
 exclude birds from data, filter to match years from blockdata (2012 - 2018)
 ```{r}
 
-Standard_points_filt <- 
-Standard_routes_points %>% 
+# Standard_points_filt <- 
+# Standard_routes_points %>% 
+#   filter(yr %in% c(2012:2018)) %>% 
+#   filter(! englishname %in% exclude)
+
+Standard_lines_filt <- 
+Standard_routes_lines %>% 
   filter(yr %in% c(2012:2018)) %>% 
   filter(! englishname %in% exclude)
 ```
@@ -111,7 +135,8 @@ Standard_routes_points %>%
 number of times a route has been surveyed in the period from 2012-2018
 ```{r}
 
-Standard_points_filt %>% 
+#Standard_points_filt %>% 
+Standard_lines_filt %>% 
   dplyr::select(karta, yr) %>% 
   distinct() %>% 
   group_by(karta) %>% 
@@ -142,7 +167,8 @@ However, not all missing values as timepoints are points that are not been count
 ```{r}
 #no time; no abundance
 Zero_counts <- 
-  Standard_points_filt %>% 
+  #Standard_points_filt %>% 
+  Standard_lines_filt %>% 
   filter(is.na(timepoint)) %>% #no recoreded timepoint
   group_by(karta, position, yr) %>%
   summarize(abundance = sum(abundance)) %>% 
@@ -151,7 +177,8 @@ Zero_counts <-
 
 #summary stat of other routes with 0 counts in some years
 Other_zero <- 
-Standard_points_filt %>% 
+#Standard_points_filt %>% 
+Standard_lines_filt %>% 
   anti_join(Zero_counts) %>% 
   group_by(karta, position, yr) %>%
   summarize(abundance = sum(abundance)) %>% 
@@ -166,40 +193,65 @@ Standard_points_filt %>%
   filter(n_0 < yr_n)
 
 #exclude Zero_counts
-Standard_points_filt <- 
-  Standard_points_filt %>% 
+# Standard_points_filt <- 
+#   Standard_points_filt %>% 
+#   anti_join(Zero_counts) 
+
+#exclude Zero_counts
+Standard_lines_filt <- 
+  Standard_lines_filt %>% 
   anti_join(Zero_counts) 
 ```
 
-We excluded `r nrow(Zero_counts)` point x year combinations that have a zero recorded birds and no recorded time
-We keep `r sum(Other_zero$n_0)` point x year combinations that have zero recorded birds but a recorded time (see `Other_zero` for details)
+We excluded `r nrow(Zero_counts)` point/line x year combinations that have a zero recorded birds and no recorded time
+We keep `r sum(Other_zero$n_0)` point/line x year combinations that have zero recorded birds but a recorded time (see `Other_zero` for details)
 
 wide format for species matrix
 
 ```{r}
 
-Standard_points_filt_wide <- 
-  Standard_points_filt %>% 
+# Standard_points_filt_wide <- 
+#   Standard_points_filt %>% 
+#   dplyr::select(yr, karta, position, englishname, abundance) %>% 
+#   spread(englishname, abundance, fill = 0)
+
+Standard_lines_filt_wide <- 
+  Standard_lines_filt %>% 
   dplyr::select(yr, karta, position, englishname, abundance) %>% 
   spread(englishname, abundance, fill = 0)
 
 ```
 
-*Loxia curvirostra* ("Crossbill") and *Loxia pytyopsittacus* ("Parrot crossbill") are very hard to distinguish wherefore they can also be reported as *Loxia sp* ("crossbill sp"). We lump all three entries as "Crossbill" and sum teh abundances for the three species 
+*Loxia curvirostra* ("Crossbill") and *Loxia pytyopsittacus* ("Parrot crossbill") are very hard to distinguish wherefore they can also be reported as *Loxia sp* ("crossbill sp"). We lump all three entries as "Crossbill" and sum the
+
 
 ```{r}
-Standard_points_filt_wide[,"Crossbill"] <- 
-  rowSums(Standard_points_filt_wide[,c("Crossbill", "Parrot crossbill", "crossbill sp")])
+# Standard_points_filt_wide[,"Crossbill"] <- 
+#   rowSums(Standard_points_filt_wide[,c("Crossbill", 
+#                                        #"Parrot crossbill", #not in study region
+#                                        "crossbill sp")])
+# 
+# Standard_points_filt_wide <- 
+#   Standard_points_filt_wide %>% 
+#   dplyr::select(#-"Parrot crossbill", 
+#                 -"crossbill sp") 
 
-Standard_points_filt_wide <- 
-  Standard_points_filt_wide %>% 
-  dplyr::select(-"Parrot crossbill", -"crossbill sp") 
+Standard_lines_filt_wide[,"Crossbill"] <- 
+  rowSums(Standard_lines_filt_wide[,c("Crossbill", 
+                                       #"Parrot crossbill", #not in study region
+                                       "crossbill sp")])
+
+Standard_lines_filt_wide <- 
+  Standard_lines_filt_wide %>% 
+  dplyr::select(#-"Parrot crossbill", 
+                -"crossbill sp") 
 
 ```
 
 
 
 ```{r}
-write_tsv(Standard_points_filt_wide, here("data", "Bird_spec_matrix_points_filtered_Sweden.tsv"))
+#write_tsv(Standard_points_filt_wide, here("data", "Bird_spec_matrix_points_filtered_Sweden.tsv"))
+write_tsv(Standard_lines_filt_wide, here("data", "Bird_spec_matrix_lines_filtered_Sweden.tsv"))
 ```
 
