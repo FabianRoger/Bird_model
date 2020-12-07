@@ -1,0 +1,205 @@
+---
+title: "Species_matrix"
+output: html_notebook
+---
+
+```{r}
+library(here)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(sf)
+```
+
+```{r, eval = F}
+Standard_routes_points <- read_tsv(here("data", "Standard_routes_points.txt"))
+Bird_summary <-  read_csv2(here("data", "Bird_stats.csv"))
+Points_geo <- st_read(here("data", "Points_counted.gpkg"))
+```
+
+## filtering birds
+
+`Bird_summary` gives the average proportion of routes on which a species is encountered per year as well as the average abundace across all routes. 
+The statistic is calculated for point and linecount separately and based on the years 2008 - present. 
+
+species that are observed on **less than 1% of routes per year** on average
+```{r}
+Bird_summary %>% 
+  filter(type == "pointcounts") %>% 
+  filter(proportion < 1)
+```
+
+species of which **less than 10 individuals per year** are observed on average
+
+```{r}
+
+Bird_summary %>% 
+  filter(type == "pointcounts") %>% 
+  filter(abundance < 10)
+
+```
+
+List of birds that are observed with either less than 10 individuals or on less than 5 routes. 
+
+```{r}
+
+rare_birds <- 
+Bird_summary %>% 
+  filter(type == "pointcounts") %>% 
+  filter(abundance < 10 | proportion < 1) %>% 
+  pull(englishname)
+
+sort(rare_birds)  
+```
+
+We also exclude a range of birds that are not associated with the main habitats that we are interested in (Forest and open land) or that live at scales that are not captured by our 500 m buffers 
+
+```{r}
+
+gulls = c("Common gull","Black-headed gull", "Herring gull",  "Lesser black-backed gull",
+          "Common tern", "Great black-backed gull","Arctic tern","Little gull") # but some of these forage on fields
+
+other_on_water = c("Great cormorant","Black-throated diver","Goosander",
+                   "Red-breasted merganser", "Red-throated diver", "Great crested grebe","Red-necked phalarope",
+                   "Shelduck", "Black guillemot", "Coot", "Slavonian grebe")
+
+ducks = c("Mallard", "Eider", "Goldeneye","Tufted duck","Teal", "Common scoter",
+          "Wigeon", "Velvet scoter", "Long-tailed duck", "Gadwall") # but e.g. goldeneye and teal nest in trees!
+
+geese=c("Barnacle goose","Greylag goose","Canada goose", "Brent goose", "Bean goose") # many of these occur on agriculturual land but principally near water
+
+domestic=("Pheasant")
+
+large_BOPs=c("White-tailed eagle","Golden eagle") # our scales definitiely not relevant for these guys.
+
+stream_specialist<-c("Dipper") # possibly don't care so much about the land-use, potentially includes also grey wagtail as well as some waders.
+
+#Aerial_foragers= c("Swift","House martin", "Sand martin")  #actually in favour of keeping these in.
+
+non_target = c(gulls,
+               other_on_water,
+               ducks,
+               geese,
+               domestic,
+               large_BOPs,
+               stream_specialist)
+
+```
+
+list of birds to exclude
+
+(we exclude 143 out of 264 species (54%) and keep 121 species)
+```{r}
+
+exclude <- union(rare_birds, non_target)
+
+sort(exclude)
+```
+
+exclude birds from data, filter to match years from blockdata (2012 - 2018)
+```{r}
+
+Standard_points_filt <- 
+Standard_routes_points %>% 
+  filter(yr %in% c(2012:2018)) %>% 
+  filter(! englishname %in% exclude)
+```
+
+## filtering routes
+
+number of times a route has been surveyed in the period from 2012-2018
+```{r}
+
+Standard_points_filt %>% 
+  dplyr::select(karta, yr) %>% 
+  distinct() %>% 
+  group_by(karta) %>% 
+  summarise(n=n()) %>% 
+  pull(n) %>% table() %>% 
+  as.data.frame() %>% 
+  mutate(prct = round(Freq / sum(Freq),2)*100) %>% 
+  ggplot(aes(x = `.`, y = Freq))+
+  geom_bar(stat = "identity", width = 0.01)+
+  geom_label(aes(label = Freq))+
+  geom_label(aes(label = paste(prct, "%")), nudge_y = 15, size = 3)+
+  labs(x = "number of years route has been counted",
+       y = "number of routes",
+       title = "number of times route has been counted from 2012 - 2018")+
+  theme_bw()
+
+```
+
+exclude routes & points that have not been counted.
+In principle, points that have not been counted have a missing value `NA` as timepoint. 
+However, not all missing values as timepoints are points that are not been counted.
+
+1) if it has a time, we consider it as counted (True zero)
+2) if it has no time, but has an abundance we keep it
+3) if it has no time and no abundance in a given year we exclude it. (missing value)
+
+
+```{r}
+#no time; no abundance
+Zero_counts <- 
+  Standard_points_filt %>% 
+  filter(is.na(timepoint)) %>% #no recoreded timepoint
+  group_by(karta, position, yr) %>%
+  summarize(abundance = sum(abundance)) %>% 
+  filter(abundance == 0) %>% #no birds recorded
+  dplyr::select(-abundance)
+
+#summary stat of other routes with 0 counts in some years
+Other_zero <- 
+Standard_points_filt %>% 
+  anti_join(Zero_counts) %>% 
+  group_by(karta, position, yr) %>%
+  summarize(abundance = sum(abundance)) %>% 
+  group_by(karta, position) %>% 
+  mutate(yr_n = n()) %>%
+  summarize(med_abundance = median(abundance), # median number of birds observed across years
+            min_abundance = min(abundance),# min number of birds observed across years
+            max_abundance = max(abundance),# max number of birds observed across years
+            n_0 = sum(abundance == 0),# number of years with 0 counts
+            yr_n = unique(yr_n)) %>% # number of years the route has been counted
+  filter(min_abundance == 0) %>% 
+  filter(n_0 < yr_n)
+
+#exclude Zero_counts
+Standard_points_filt <- 
+  Standard_points_filt %>% 
+  anti_join(Zero_counts) 
+```
+
+We excluded `r nrow(Zero_counts)` point x year combinations that have a zero recorded birds and no recorded time
+We keep `r sum(Other_zero$n_0)` point x year combinations that have zero recorded birds but a recorded time (see `Other_zero` for details)
+
+wide format for species matrix
+
+```{r}
+
+Standard_points_filt_wide <- 
+  Standard_points_filt %>% 
+  dplyr::select(yr, karta, position, englishname, abundance) %>% 
+  spread(englishname, abundance, fill = 0)
+
+```
+
+*Loxia curvirostra* ("Crossbill") and *Loxia pytyopsittacus* ("Parrot crossbill") are very hard to distinguish wherefore they can also be reported as *Loxia sp* ("crossbill sp"). We lump all three entries as "Crossbill" and sum teh abundances for the three species 
+
+```{r}
+Standard_points_filt_wide[,"Crossbill"] <- 
+  rowSums(Standard_points_filt_wide[,c("Crossbill", "Parrot crossbill", "crossbill sp")])
+
+Standard_points_filt_wide <- 
+  Standard_points_filt_wide %>% 
+  dplyr::select(-"Parrot crossbill", -"crossbill sp") 
+
+```
+
+
+
+```{r}
+write_tsv(Standard_points_filt_wide, here("data", "Bird_spec_matrix_points_filtered_Sweden.tsv"))
+```
+
