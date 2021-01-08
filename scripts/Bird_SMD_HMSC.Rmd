@@ -1,0 +1,925 @@
+---
+title: "HMSC - Bird SMD model v1"
+output: html_notebook
+---
+
+install Hmsc from CRAN 
+```{r}
+if(!"Hmsc" %in% installed.packages()){
+  ans <- readline(prompt = "Hmsc is not installed. Do you want to install it now (y/n)")
+  if(ans == "y"){
+   install.packages("Hmsc") 
+  }
+  }
+```
+
+
+```{r}
+library(Hmsc)
+library(sf)
+library(tidyr)
+library(dplyr)
+library(corrplot)
+library(ape)
+library(here)
+library(ggplot2)
+library(readr)
+library(raster)
+library(tidybayes)
+library(stringr)
+
+source(here("scripts", "helper_functions.R"))
+```
+
+#load data
+
+## Species table
++ yearly abundances for the pointcounts for all of Sweden (2012-2018)
++ exported by `Species_matrix.Rmd`
+
+we have excluded all Birds that are observed 
++ with <10 individuals per year 
++ on < 5 routes per year 
+
+We have also excluded a range of birds that are not associated with the habitat in our study (see `Species_matrix.Rmd` for details)
+
+The matrix contains 112 Species. 
+
+```{r}
+# SpeciesMatrix
+SpeciesMatrix <- read_tsv(here("data", "Bird_spec_matrix_points_filtered_Sweden.tsv"))
+```
+
+
+## Land-use data 
+
++ Landuse types (number of 10m^2 pixel) for 500m buffer around each point for all routes in Sweden. 
++ exported by `Join_LandUsed.Rmd`
++ Based on NMD (`NMD_characterization.Rmd`) and Application Data (`SJB_characterization.Rmd`)
++ 2012-2018 but only agricultural land changes, rest is constant
+
+LandUse from NMD and SJB have been grouped into `r ncol(LandUse) - 3` LandUse classes:
+
+**Forest (from NMD)**
+
+"Ädellövskog"
+"Barrblandskog"
+"Granskog"
+"Lövblandad_barrskog"
+"Triviallövskog"
+"Triviallövskog_med_ädellövinslag"
+"Tallskog"
+"Temporärt_ej_skog"
+
+**Other Landtype (NMD)**
+
+"Öppen_våtmark"
+"Hav"     
+"Exploaterad_mark"            
+"Sjö_och_vattendrag"
+"Övrig_öppen_mark_med_vegetation"
+"Övrig_öppen_mark_utan_vegetation"
+
+**Agriculture**
+
+"Fallow"                                                    
+"Ley"
+"Pasture"
+"Spring_cereal"
+"Other"                            
+"Tuber_Root"
+"Winter_cereal"  
+ 
+
+```{r}
+#LandUse data
+LandUse <-  read_csv(here("data", "LandUse_joint.csv"))
+```
+
+## Trait 
+
+Trait data for Birds in the Swedish Data. See `Trait_Matrix.Rmd` for details. 
+
+We selected three traits for now: 
+
+- log(10) mean bodymass (unisex)
+- migration strategy 
+- winglength to bodylength ratio 
+
+
+```{r}
+#Trait data
+Traits <- read_tsv(here("data", "Traits_selected.txt"))
+```
+
+##Phylogeny 
+
+Phylogeny of Birds in the Swedish Data. From BirdTree.org. Exported from `BirdTree.Rmd`. See that script for all details
+
+```{r}
+#Phylogeny
+BirdTree <- read.tree(here("data","BirdTreeSub.tree" ))
+BirdTree$tip.label <- gsub("_", " ", BirdTree$tip.label)
+```
+
+
+Climate data for all routes, taken from WorldClim. See script `Worldclim_characterization.Rmd for details`
+
+```{r}
+#Climate
+WorldClim <- read_tsv(here("data", "WorldClimRoutes.csv")) %>% 
+  dplyr::select(karta, WCS_5, WCS_12)
+
+# here I select 
+# WCS_5 (the maximum temperature of the warmest month) and 
+# WCS_12 (average annual precipitation)
+# following Regos et al 2019 (Scientific Reports) --> just for testing
+
+#Route Coordinates
+Standard_geo <- read_sf(here("data", "Standard_routes_geo.gpkg")) %>% 
+  filter(type == "point") %>% 
+  dplyr::select(-type)
+
+# st_distance() for distance matrix in m
+# st_coordinates() to extract absolute latitude
+```
+
+
+# Jönköping region
+Here we subset the data to include the Jönköping sample region + a buffer around it. We also split the data into a training and validation set. 
+
+## define region
+
+Here we define the region for the model 
++ Taking the JKP study region
++ making a 55 km buffer around the region boundaries
++ taking the bounding box around that buffer
++ choosing all routes in that bounding box
+
+```{r}
+#Jönköping study region
+JKP <- 
+read_sf(here("data", "prod_län_combi_byyann_skarning2.shp")) %>% 
+  slice(1) %>% 
+  mutate(LAN_NAMN = "Jönköping") %>% 
+  st_set_crs(3006)
+
+#make a 55 km buffer around the study region
+JKP_sel <- JKP %>% 
+  st_buffer(55000) %>%
+  st_bbox() %>%
+  st_as_sfc() %>%
+  st_sf() %>% 
+  st_set_crs(3006)
+
+#join route centroids to jkp data
+Standard_geo_JKP <- 
+Standard_geo %>% 
+  st_transform(3006) %>% 
+  group_by(karta) %>% 
+  summarise() %>% 
+  st_centroid() %>% 
+  st_join(JKP_sel, join = st_covered_by, left = FALSE)
+
+ggplot(JKP)+
+  geom_sf()+
+  geom_sf(data = . %>% st_buffer(55000), fill = NA)+
+  geom_sf(data = . %>% st_buffer(55000) %>% st_bbox() %>% st_as_sfc() %>% st_sf(), fill = NA)+
+  geom_sf(data = Standard_geo_JKP, size = 2, shape = 0)
+```
+
+## defining training and validation data
+
+here we split the study region into tiles and assign 1/3 of the tiles to a validation dataset and keep 2/3 as a training dataset. 
+
+We choose tiles and not routes to have clusters of routes for valiadtion which is recommended to not get good validation results based on spatial autocorrelation. 
+
+
+```{r}
+# bounding box
+BBOX <- st_bbox(JKP_sel)
+
+# make tiles
+tiles <- 
+  divide_raster_poly(BBOX, 5,5) %>% 
+  mutate(tile = paste("tile", 1: n()))
+
+tiles <- st_set_crs(tiles, 3006)
+
+# select routes that fall into bounding box (route is kept if route centroid is within the bounding box)
+route_in_tile <- 
+Standard_geo_JKP %>% 
+  st_join(tiles, join = st_within) %>% 
+  st_set_geometry(NULL)
+
+# choose hold-out sample
+set.seed(4309) 
+hold_out_tiles <- 
+  route_in_tile %>% pull(tile) %>% unique %>% sample(floor(length(.)*0.3))
+
+#visualize
+Standard_geo_JKP %>% 
+  left_join(route_in_tile) %>% 
+  mutate(fold = case_when(tile %in% hold_out_tiles ~ "hold_out",
+                          TRUE ~ "training")) %>% 
+  ggplot() +
+  geom_sf(aes(colour = fold, fill = fold), size = 2, shape = 0)+
+  geom_sf(data = tiles, fill = NA)+
+  geom_sf(data = JKP, fill = NA)
+
+```
+
+# HMSC Model for Jönköping
+
+We follow the example of: 
+
+Tikhonov, Gleb, Øystein H Opedal, Nerea Abrego, and Aleksi Lehikoinen. “Joint Species Distribution Modelling with the R‐package Hmsc,” Methods in Ecology and Evolution
+
+(Appendix 2)
+
+## Model using species abundance data
+
+### Species matrix
+Y = site x species matrix 
+
+We keep only the routes in the selected region and only those in the training subset. 
+
+We filter out the species with less than 10 observations across the years
+
+!!!! OBS: due to the error below, the routes were not subset between training and validation data. The model was fit to all routes !!!!
+
+```{r}
+
+Y = SpeciesMatrix %>% 
+  filter(karta %in% Standard_geo_JKP$karta) %>% 
+  filter(! karta %in% hold_out_tiles) ## doesn't work
+
+too_rare <- 
+colSums(Y[,-c(1:3)]) %>% 
+  data.frame(abundance = `.`) %>% 
+  tibble::rownames_to_column(var = "species") %>%
+  filter(abundance < 1800) #roughly only 10% most common species
+
+#exclude
+Y = Y[, ! colnames(Y) %in% too_rare$species]
+
+#order Y by year, point, route 
+Y <- arrange(Y, yr, karta, position)
+
+#collate the variables to make unique row identifiers
+rowID_df <- Y %>% dplyr::select(1:3)
+rowID <- rowID_df %>% mutate(rowID = paste(yr, karta, position, sep = "_")) %>% pull(rowID)
+
+#transform Y to dataframe with rownames
+Y <- as.matrix(Y[,-c(1:3)])
+rownames(Y) <- rowID
+
+#show list of excluded species
+#too_rare
+
+#list of species we kept
+colnames(Y)
+
+```
+
+###Environmental co-variates
+
+XData is the dataframe of environmental co-variates. 
+
+We include the Landuse types as continuous environmental co-variates 
+We also include two climatic variables and their square term (to allow for intermediate niche optima)
+
+```{r}
+
+XData =
+LandUse %>% 
+  left_join(WorldClim) %>% #join LandUse and Climate Data
+  mutate(year = as.numeric(gsub("SJB_(\\d{4})", "\\1", year))) %>%  #extract numeric year 
+  mutate(rowID = paste(year, karta, position, sep = "_")) %>% 
+  filter(rowID %in% rownames(Y)) #subset to points in Species matrix
+ 
+#make matrix with matching rowIDs to Y
+XData <- arrange(XData, year, karta, position)
+rowIDX <- XData %>% pull(rowID)
+
+XData <- 
+  XData %>%
+  dplyr::select(-rowID, -karta, -position, -year) %>% 
+  as.data.frame()
+
+rownames(XData) <- rowIDX
+
+all(rownames(XData) == rownames(Y))
+```
+
+### simplified model
+
+```{r}
+XData <- 
+XData %>% 
+  mutate(Lövskog = 
+           Ädellövskog +
+           Triviallövskog +
+           Triviallövskog_med_ädellövinslag,
+         Barrskog = 
+           Lövblandad_barrskog+
+           Tallskog+
+           Granskog+
+           Barrblandskog,
+         Cereal = 
+           Spring_cereal+
+           Winter_cereal+
+           Tuber_Root,
+         Open = 
+           Fallow+
+           Öppen_våtmark+
+           Övrig_öppen_mark_med_vegetation+
+           Övrig_öppen_mark_utan_vegetation,
+         Clearcut = 
+           Temporärt_ej_skog
+           ) %>% 
+  dplyr::select(Lövskog, Barrskog, Clearcut, Pasture, Ley, Cereal, Open, Other)
+
+rownames(XData) <- rowIDX
+  
+```
+
+## check for colinearity
+
+No strong colinearities among the environmental variables
+
+```{r}
+cor(XData) %>% 
+  corrplot("ellipse", type = "lower", diag = F, addCoef.col = "black", number.digits = 2)
+```
+
+
+###Phylogeny
+
+```{r}
+phyloTree <- BirdTree
+
+phyloTree <- drop.tip(phyloTree, phyloTree$tip.label[!phyloTree$tip.label %in% colnames(Y)])
+
+all(colnames(Y) %in% phyloTree$tip.label)
+```
+
+###Traits
+
+Traits has to be a dataframe as we mix categorical and numerical traits
+```{r}
+TrData = Traits
+TrData <- filter(TrData, englishname %in% colnames(Y))
+
+#as dataframe
+Tr_rows <- TrData$englishname
+TrData = as.data.frame(TrData[,-1])
+rownames(TrData) <- Tr_rows
+
+all(rownames(TrData) %in% colnames(Y))
+```
+
+###Study Design
+
+We have 3 random factors
+
++ year
++ route within year
++ point within route 
+
+We combine route and year to sampling location for which we will specify a spatial random factor leaving us with 2 random factors 
+
++ year
++ sampling_loc
+
+```{r}
+studyDesign = rowID_df[3:1] #the order is position within karta within year
+
+#check that rows in Study Design correspond to rownames in Y 
+all(rownames(Y) == apply(studyDesign[,3:1], 1, paste0, collapse="_"))
+
+#combine route and year
+studyDesign <- 
+studyDesign %>% 
+  mutate(karta2 = karta) %>% 
+  unite(sampling_loc, karta2, position) %>% 
+  mutate_all(as.factor) %>% 
+  as.data.frame() %>% 
+  droplevels()
+
+rownames(studyDesign) <- rowID
+
+```
+
+
+
+###Random effect structure
+
+We include the `sampling_loc` within routes as spatial latent variable
+
+```{r}
+#spatial random level for routes
+xycoords = 
+  Standard_geo %>% 
+  mutate(sampling_loc = paste(karta, position, sep = "_")) %>% 
+  filter(sampling_loc %in% levels(studyDesign$sampling_loc)) %>% 
+  group_by(karta) %>% 
+  summarise(geom = st_combine(geom)) %>% 
+  st_centroid() 
+  
+xycoords_M <- st_coordinates(xycoords)
+rownames(xycoords_M) <- xycoords$karta
+
+#spatial Random level for routes
+rL = HmscRandomLevel(sData=xycoords_M) #units
+rL$nfMin = 5
+rL$nfMax = 10
+
+#unstructured Random level of points within routes
+
+## unnecessary? ##
+## breaks prediction ##
+
+points <- data.frame(sampling_loc = unique(studyDesign$sampling_loc)) %>% 
+  droplevels()
+
+rL2 = HmscRandomLevel(units=points) #units
+rL2$nfMin = 5
+rL2$nfMax = 10
+
+#time?
+# rL = HmscRandomLevel(sData=xycoords_M) #units
+# rL$nfMin = 5
+# rL$nfMax = 10
+
+```
+
+###Formula for Env data
+
+linear effect of all habitat variable and the two climatic variables + a quadartic effect of Temperature and precipitation
+
+```{r}
+
+# XFormula = ~ 
+#   #Forest
+#   Ädellövskog + Barrblandskog + Granskog + Lövblandad_barrskog + Tallskog + Triviallövskog +
+#   Temporärt_ej_skog + Triviallövskog_med_ädellövinslag +
+#   #other landuse in NMD
+#   Exploaterad_mark + Öppen_våtmark + Other + Övrig_öppen_mark_med_vegetation + Sjö_och_vattendrag +
+#   Övrig_öppen_mark_utan_vegetation + 
+#   #agricultural landuse
+#   Fallow + Hav + Ley +Pasture +  Spring_cereal + Tuber_Root + Winter_cereal + 
+#   #Climate
+#   WCS_5 + WCS_12 + poly(WCS_5, degree = 2, raw = TRUE) + 
+#   poly(WCS_12, degree = 2, raw = TRUE)
+
+XFormula = ~
+  #Forest
+  Lövskog + Barrskog + Clearcut +
+  #other landuse in NMD
+  Open + Other +
+  #agricultural landuse
+  Pasture + Ley + Cereal
+```
+
+
+
+###Formula for Trait data
+
+
+```{r}
+TrFormula = ~Migration + logBM + Wing_to_Length_ratio
+```
+
+
+###construct Model
+
+```{r}
+m2 = Hmsc(Y = Y,
+         XData = XData, XFormula = XFormula,
+        # TrData = TrData, TrFormula = TrFormula,
+        # phyloTree = phyloTree, with phologeny 10K samples not done in 24h. 
+         distr = "lognormal poisson",
+         studyDesign = studyDesign, ranLevels = list(sampling_loc = rL2, karta = rL))
+```
+
+##run model 
+```{r}
+#dir.create(here("model"))
+
+filename <- here("model", "Mod_1_abund_top10")
+
+thin = 5
+samples = 1000
+nChains = 3
+
+set.seed(3450)
+ptm = proc.time()
+
+mod2 = sampleMcmc(m2, samples = samples, thin = thin,
+                  transient = ceiling(0.5*samples*thin),
+                  nChains = nChains, nParallel = nChains,
+                  updater=list(GammaEta = FALSE),
+                  verbose = 5)
+
+computational.time = proc.time() - ptm
+
+save(mod2, file=filename, computational.time)
+load(here("model", "Mod_1_abund_top10"))
+```
+
+
+#model evaluation
+
+```{r}
+names(mpost)
+```
+
+the fitted model has parameter estimates for the following parameters: 
+
+Beta: species niches
+Gamma: influence of traits on niches
+V: residual covariance of species niches
+Sigma: residual variance
+Eta: Site loadings
+Lambda: Species loadings
+Omega: species associations
+Alpha: spatial scale of site loadings
+?? Psi: ?? Local shrinkage of species loadings ??
+Delta: Global shrinkage of species loadings
+
+
+## convergence
+```{r}
+
+load(here("model", "Mod_1_abund_top10"))
+mpost = convertToCodaObject(mod2)
+
+es.beta = effectiveSize(mpost$Beta)
+ge.beta = gelman.diag(mpost$Beta,multivariate=FALSE)$psrf 
+
+#es.rho = effectiveSize(mpost$Rho)
+#ge.rho = gelman.diag(mpost$Rho,multivariate=FALSE)$psrf 
+
+#es.V = effectiveSize(mpost$V)
+#ge.V = gelman.diag(mpost$V,multivariate=FALSE)$psrf
+es.omega = effectiveSize(mpost$Omega[[1]])
+```
+
+Here we look at the chain mixing for the beta parameters. Ideally the chains should be well mixed and show no visible trends but 'jump' up and down without autocorrelation. 
+
+```{r}
+
+# function to standardise chain values
+
+chain_st <- function(x){
+  
+  if(min(x) < 0){
+   x <- x+abs(min(x)) 
+  }
+  
+  if(max(x) > 0){
+  x <- x/max(x)}
+  return(x)
+}
+
+Beta_df <- 
+lapply(mpost$Beta, as.data.frame) %>% 
+  bind_rows(.id = "chain") %>% 
+  group_by(chain) %>% 
+  mutate(sample = 1:n()) %>% 
+  pivot_longer(cols=starts_with("B"), names_to = "parameter") %>% 
+  mutate(bird = gsub(".+\\),(.+)\\(.+", "\\1", parameter)) %>%
+  mutate(bird = str_trim(bird)) %>% 
+  mutate(fixed_effect = gsub("B\\[\\(?(\\w+)\\)? \\(.+", "\\1", parameter)) 
+
+Beta_df %>% 
+  group_by(bird, fixed_effect) %>% 
+  mutate(value = chain_st(value)) %>% 
+  ggplot(aes(x = sample, y = value, colour = chain))+
+  geom_line(size = 0.1)+
+  facet_grid(fixed_effect~bird, scales = "free")+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=1))+
+  scale_colour_brewer(palette = "Set1")+
+  theme(strip.text.y = element_text(angle=0))+
+  theme(strip.text.x = element_text(angle=90))
+  
+
+```
+
+
+
+Here we visualize the effective sample size and gelman diagnostic for the beta parameters. We sampled 4 chains and recorded 1000 samples from each chain (with thinning) so the maximum sample size is 4000. 
+
+The Gelman diagnostic should be close to 1.
+
+```{r}
+es.beta_df <- es.beta %>% 
+  data.frame(es = .) %>% 
+  tibble::rownames_to_column(var = "parameter") %>% 
+  mutate(bird = gsub(".+\\),(.+)\\(.+", "\\1", parameter)) %>%
+  mutate(bird = str_trim(bird)) %>% 
+  mutate(fixed_effect = gsub("B\\[\\(?(\\w+)\\)? \\(.+", "\\1", parameter))
+
+ge.beta_df <- ge.beta %>% 
+  data.frame(ge = .) 
+
+es.beta_df %>% 
+  mutate(ge.Point.est = ge.beta_df$ge.Point.est.) %>% 
+  ggplot(aes(y = bird, x = fixed_effect, size = es, fill = ge.Point.est))+
+  geom_point(shape = 21)+
+  scale_fill_viridis_c()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=0.5))+
+  labs(title = "effective sample size (max = 4000) - Beta")
+```
+
+```{r}
+Alpha_df <- 
+lapply(mpost$Alpha[[2]], as.data.frame) %>% 
+  bind_rows(.id = "chain") %>% 
+  group_by(chain) %>% 
+  mutate(sample = 1:n()) %>% 
+  pivot_longer(cols=starts_with("A"), names_to = "parameter")
+
+
+Alpha_df %>% 
+  group_by(parameter) %>% 
+ # mutate(value = chain_st(value)) %>% 
+  ggplot(aes(x = sample, y = value, colour = chain))+
+  geom_line(size = 0.1)+
+  facet_wrap(~parameter, scales = "free")+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=1))+
+  scale_colour_brewer(palette = "Set1")+
+  theme(strip.text.y = element_text(angle=0))
+
+
+```
+
+```{r}
+Omega_df <- 
+lapply(mpost$Omega[[1]], as.data.frame) %>% 
+  bind_rows(.id = "chain") %>% 
+  group_by(chain) %>% 
+  mutate(sample = 1:n()) %>% 
+  pivot_longer(cols=starts_with("O"), names_to = "parameter") %>% 
+  mutate(bird1 = gsub(".+\\[(.+?)\\(.+", "\\1", parameter)) %>%
+  mutate(bird1 = str_trim(bird1)) %>% 
+  mutate(bird2 = gsub(".+\\),(.+?)\\(.+", "\\1", parameter)) %>%
+  mutate(bird2 = str_trim(bird2)) 
+
+
+
+Omega_df %>% 
+  group_by(parameter) %>% 
+  mutate(value = chain_st(value)) %>% 
+  ggplot(aes(x = sample, y = value, colour = chain))+
+  geom_line(size = 0.1)+
+  facet_grid(bird1~bird2, scales = "free")+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=1))+
+  scale_colour_brewer(palette = "Set1")+
+  theme(strip.text.y = element_text(angle=0))+
+  theme(strip.text.x = element_text(angle=90))
+
+```
+
+
+## model fit
+
+The metrics of model fit that are computed depend on the type of response variable (count vs presence / absence). We modelled counts with the distributional assumption "lognormal poisson". As such HMSC gives us the following measures of model fit:
+
+$RMSE gives the root mean square error between the predicted and observed values (median posterior abundance estimate compared to observed abundance across all sampling units, by species). The units are in the units of the predicted value (counts of birds at a single point count)
+
+$SR2 is pseudo-R2 computed as the squared spearman correlation between observed and predicted values, times the sign of the correlation. 
+
+$0.X are metrics that are calculated to predict the presence / absence (predicted and observed counts are truncated to p/a so the fit relates to how well the model can predict where the species can be found)
+
+  $0.AUC measures the area under the curve. 
+  $0.TjurR2 is the Tjur R square. 
+  
+Both are measures of discrimination that measure how well occurrence probabilities can discriminate between occupied or empty sampling units. If the model prediction is not better than by chance, 0.AUC will approach 0.5 while the TjurR2 will approach 0. A perfect model will approach 1 for both AUC and Tjur R2. 
+
+$0.RSME is the root mean square error calculated on presence/absence area. The unit changes as now the models n predicts p/a. RSME thus gives the fraction of sites that are miss-predicted (*** I think ***)
+
+$C.X is the opposite. It measures the predictive performance of the model for the count data on sites where the species is present. 
+
+$C.SR2 thus gives the pseudo-R2 excluding all sites from which the species is absent
+
+$C.RMSE gives the average discrepancy between predicted abundance and modelled abundance for sites were the species is present. 
+
+
+```{r}
+
+preds = computePredictedValues(mod2, expected = FALSE)
+
+MF <- evaluateModelFit(mod2, preds)
+
+as.data.frame(MF) %>% 
+  mutate(across(where(is.numeric), ~signif(.x, 2))) %>% 
+  mutate(Species  = colnames(preds)) %>% 
+  relocate(Species)
+  
+```
+## Variance partitionig
+
+```{r}
+VP <- computeVariancePartitioning(mod2)
+
+VP$vals
+
+signif(apply(VP$vals, 1, mean)*100,2)
+```
+
+
+## parameter estimates
+
+We have a look at the parameter estimates for the beta parameters
+
+```{r}
+
+lapply(mpost$Beta, as.data.frame) %>% 
+  bind_rows(.id = "chain") %>% 
+  group_by(chain) %>% 
+  mutate(sample = 1:n()) %>% 
+  pivot_longer(cols=starts_with("B"), names_to = "parameter") %>% 
+  mutate(bird = gsub(".+\\),(.+)\\(.+", "\\1", parameter)) %>%
+  mutate(bird = str_trim(bird)) %>% 
+  mutate(fixed_effect = gsub("B\\[\\(?(\\w+)\\)? \\(.+", "\\1", parameter)) %>% 
+  filter(fixed_effect != "Intercept") %>% 
+  ggplot(aes(x = bird, y = value))+
+  geom_violin()+
+  geom_hline(yintercept = 0, colour = "red", size = 0.5)+
+  facet_wrap(~fixed_effect, ncol = 8)+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=1))+
+  coord_flip()
+  
+```
+
+
+We have a look at the parameter estimates for the Alpha parameters (random factor, spatial autocorrelation)
+
+```{r}
+
+lapply(mpost$Alpha[[2]], as.data.frame) %>% 
+  bind_rows(.id = "chain") %>% 
+  group_by(chain) %>% 
+  mutate(sample = 1:n()) %>% 
+  pivot_longer(cols=starts_with("A"), names_to = "parameter") %>% 
+  ggplot(aes(x = parameter, y = value/1000))+
+  geom_violin(draw_quantiles = c(0.5))+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=1))+
+  coord_flip()
+  
+```
+
+residual species associations
+
+```{r}
+
+Omega_df %>%
+  ggplot(aes(x = value))+
+  geom_histogram()+
+  geom_vline(xintercept = 0, colour = "red", size = 0.5)+
+  facet_grid(bird1~bird2, scales = "free")+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = -90, vjust = 0.5, hjust=1))+
+  theme(strip.text.y = element_text(angle=0))+
+  theme(strip.text.x = element_text(angle=90))
+  
+
+```
+
+```{r}
+Gradient = constructGradient(mod2, focalVariable = "Barrskog")
+predY = predict(mod2, Gradient = Gradient, expected = TRUE)
+
+Barrskog <- 
+do.call(rbind, predY) %>% 
+  as.data.frame() %>% 
+  tibble::rowid_to_column() %>% 
+  mutate(gradient = rep(Gradient$XDataNew$Barrskog, length(predY))) %>% 
+  pivot_longer(cols = matches(mod2$spNames), names_to = "bird") 
+
+Barrskog_sum <- 
+  Barrskog %>% 
+  group_by(gradient, bird) %>% 
+  summarise(y = quantile(value, 0.5),
+            ymin = quantile(value, 0.25),
+            ymax = quantile(value, 0.75))
+  
+
+BS_plot <- 
+ggplot(Barrskog, aes(x = gradient, y = value))+
+  geom_point(size = 0.2, alpha = 0.3, position = position_jitter(width = 0.1), colour = "grey")+
+  geom_line(data = Barrskog_sum, aes(x = gradient, y = y), colour = "darkred")+
+  geom_line(data = Barrskog_sum, aes(x = gradient, y = ymin), colour = "darkblue", size = 0.3)+
+  geom_line(data = Barrskog_sum, aes(x = gradient, y = ymax), colour = "darkblue", size = 0.3)+
+  facet_wrap(~bird, scales = "free")+
+  theme_bw()
+
+BS_plot
+```
+
+#predict
+
+import LandUse data for Jönköping (over which we will make predictions)
+```{r}
+LandUse_JKP <- readRDS( here("data", "JKP_predict_LandUse_data.RDS"))
+JKP_points <- readRDS( here("data", "JKP_predict_points.RDS"))
+```
+
+recode to match model 
+
+```{r}
+LandUse_JKP_X <- 
+LandUse_JKP %>% 
+  mutate(Lövskog = 
+           Ädellövskog +
+           Triviallövskog +
+           Triviallövskog_med_ädellövinslag,
+         Barrskog = 
+           Lövblandad_barrskog+
+           Tallskog+
+           Granskog+
+           Barrblandskog,
+         Cereal = 
+           Spring_cereal+
+           Winter_cereal,
+           #Tuber_Root,  #not in data
+         Open = 
+           Fallow+
+           Öppen_våtmark+
+           Övrig_öppen_mark_med_vegetation+
+           Övrig_öppen_mark_utan_vegetation,
+         Clearcut = 
+           Temporärt_ej_skog
+           ) %>% 
+  dplyr::select(Lövskog, Barrskog, Clearcut, Pasture, Ley, Cereal, Open, Other)
+  
+```
+
+spatial data
+```{r}
+LandUse_JKP_SX <- 
+  LandUse_JKP %>% 
+  dplyr::select(X,Y)
+```
+
+prepare gradient for model fitting
+```{r}
+# remove first random level (points)
+mod2_p <- mod2
+mod2$ranLevels$sampling_loc <- NULL
+mod2$rL$sampling_loc <- NULL
+mod2$rLNames <- "karta" 
+mod2$nr <- 1
+
+Gradient = prepareGradient(mod2_test, XDataNew = LandUse_JKP_X, sDataNew = list(karta = LandUse_JKP_SX))
+
+#change class to only data.frame (otherwise function fails)
+class(Gradient$XDataNew) <- "data.frame"
+
+#compute predicted values
+nParallel=3
+predY = predict(mod2_test, Gradient=Gradient, expected = TRUE, nParallel=nParallel)
+
+```
+
+
+mean parameter estimates
+```{r}
+EpredY=Reduce("+",predY)/length(predY)
+```
+
+
+```{r}
+# expected abundance of the Starling. 
+Starling = EpredY[,8]
+
+zero_one <- function(x) {(x - min(x)) / (max(x) - min(x))}
+
+JKP_points %>% 
+  mutate(Starling = Starling) %>% 
+  ggplot(aes(fill = Starling))+
+  geom_sf(colour = "NA")+
+  scale_fill_viridis_c()
+
+JKP_points %>% 
+  mutate(Starling = Starling) %>% 
+  mutate(Pasture = LandUse_JKP_X$Pasture) %>%
+  gather(-karta,-geometry, key = "map", value = "value") %>% 
+  group_by(map) %>% 
+  mutate(value = zero_one(value)) %>% 
+  ggplot(aes(fill = value))+
+  geom_sf(colour = "NA")+
+  scale_fill_viridis_c()+
+  facet_wrap(~map)
+
+?gather
+```
+
+
