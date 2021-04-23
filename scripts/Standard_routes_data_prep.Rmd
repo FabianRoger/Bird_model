@@ -19,7 +19,7 @@ library(here)
 load bird data for Standard routes
 ```{r}
 Standard_data <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_totalstandard.xlsx")
-Standard_geo <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_standardrutter_koordinater.xlsx")
+#Standard_geo <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_standardrutter_koordinater.xlsx")
 species_codes <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_eurolist.xlsx")
 ```
 
@@ -59,7 +59,7 @@ Standard_geo_point <-
 
 Standard_geo_point <- 
 Standard_geo_point %>% 
-  mutate(geometry = ifelse(position == "p1", geometry, 
+  mutate(geo = ifelse(position == "p1", geometry, 
                     ifelse(position == "p2", geometry+c(0,1000),
                     ifelse(position == "p3", geometry + c(0,2000),
                     ifelse(position == "p4", geometry + c(1000,2000),
@@ -67,7 +67,11 @@ Standard_geo_point %>%
                     ifelse(position == "p6", geometry + c(2000,1000),
                     ifelse(position == "p7", geometry + c(2000,0),
                     geometry + c(1000,0))))))))) %>% 
+  st_drop_geometry %>% 
+  st_as_sf() %>% 
+  rename(geometry = geo) %>% 
   mutate(type = "point")
+  
 
 Standard_geo_lines <- 
   Standard_geo_point %>% 
@@ -147,14 +151,12 @@ Standard_data_meta %>%
     rename(timepoint = `000`) %>% 
   filter(timepoint == 0) 
 
-Standard_routes_points %>% 
-  filter(paste(karta, yr, position) %in% paste(pnc$karta, pnc$yr, pnc$position)) %>% 
-  group_by(karta, yr, position, timepoint) %>% 
-  summarise(abundance = sum(abundance)) %>% 
-  filter(abundance > 0) %>% 
-  arrange(abundance)
-
-  
+# Standard_routes_points %>% 
+#   filter(paste(karta, yr, position) %in% paste(pnc$karta, pnc$yr, pnc$position)) %>% 
+#   group_by(karta, yr, position, timepoint) %>% 
+#   summarise(abundance = sum(abundance)) %>% 
+#   filter(abundance > 0) %>% 
+#   arrange(abundance)
 ```
 
 ### point routes
@@ -170,8 +172,8 @@ Standard_data_meta_p <-
   filter(grepl("p", position)) %>% 
   select(-`999`) %>% 
   rename(timepoint = `000`) %>% 
-  # mutate(counted = case_when(timepoint == 0 ~ "no",
-  #                            TRUE ~ "yes")) %>% 
+  mutate(counted = case_when(timepoint == 0 ~ "no",
+                              TRUE ~ "yes")) %>% 
   mutate(timepoint = case_when(timepoint == 9110 ~ 911, #correct data entry error
                                timepoint == 560 ~ 506, #correct data entry error
                                timepoint == 973 ~ 937, #correct data entry error
@@ -190,7 +192,7 @@ Standard_data_meta_p <-
 ```
 
 
-93% of the routes have >= 6 timepoints, < 1 % have none. If we need it we can guess the timpoints for most routes from different years, but we don't do that for now
+93% of the routes have >= 6 timepoints, < 1 % have none. If we need it we can guess the timepoints for most routes from different years, but we don't do that for now
 
 ```{r}
 
@@ -268,7 +270,7 @@ join and export metadata, count data and species names
 
 Standard_lines <- 
 filter(Standard_data, ! art %in% c("000", "999")) %>% # filter out non-species codes
-  filter(as.numeric(art) < 701) %>%  # filter out mamals
+  filter(as.numeric(art) < 701) %>%  # filter out mammals
   select(karta, yr, art, starts_with("l"), -lind) %>% 
   mutate_at(vars(starts_with("l")), function(x) case_when(is.na(x) ~ 0, TRUE ~ x)) %>% 
   gather(position, abundance, -karta, -yr, -art) %>% 
