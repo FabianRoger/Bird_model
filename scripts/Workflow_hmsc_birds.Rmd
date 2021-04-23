@@ -1,0 +1,556 @@
+---
+title: "Workflow for HMSC Bird model (F2F project)"
+author: "Fabian Roger"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    keep_md: yes
+    theme: readable
+    mathjax: default
+    toc: true
+    toc_float: true
+    toc_collapsed: true
+  github_document:
+    toc: yes
+    toc_depth: 5
+    pandoc_args: --webtex
+  pdf_document:
+    toc: yes
+---
+
+```{r, include = FALSE, echo = FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(readr)
+library(here)
+library(kableExtra)
+```
+
+This document describes the workflow and analysis choices for the bird HMSC model. 
+
+The Model relies on the following data (and versions)
+
+# Study region
+
+## `Jönköping_subset.Rmd`
+
+Imports : 
+
+`prod_län_combi_byyann_skarning2.shp`
+
++ defines the three study regions in F2F
+
+`stdruttPunkter.shp`
+
++ polygone of routes
+
+`prodzon2.shp`
+
++ Agricultural production regions as defined by SBC
+
+Exports : `JKP_karta.RDS`
+
+**script** `Jönköping_subset.Rmd` imports the file defining the production regions, the study region and the Swedish country border (equivalent to the coastline for this region). 
+
+The production region 5 "Götalands Skogsbygder" comprises both southern study regions (Jönköping and Norra Skåne). It defines the forest dominated region where agriculture is marginal - which is the focus of the study. 
+
+We choose all routes that are in production region 5 to fit the bird model. However we apply a buffer of 5 km inland to exclude coastal routes / routes on the archipelago islands. 
+
+The routes in tat area are exported in`JKP_karta.RDS`
+
+```{r, echo=FALSE, out.width="50%", out.height="50%", fig.cap="routes used to fit the model for Jönköping"}
+knitr::include_graphics(here("plots", "route_selection.png"))
+```
+
+# Bird data 
+
+## `Standard_routes_data_prep`
+
+**Imports** 
+
+`public_totalstandard.xlsx` 
+
++ Breeding bird survey 1996 - 2018
+
+`public_standardrutter_koordinater.xlsx` (should be replaced by `stdruttLinjer.shp`)
+
++ Route coordinates
+
+`public_eurolist.xlsx` 
+
++ metadata for species codes
+
+**script** `Standard_routes_data_prep.Rmd`:
+
+In the script `Standard_routes_data_prep.Rmd` I clean the `public_totalstandard.xlsx` file, correcting some data entry errors (for impossible timepoints), splitting between point and line counts, filtering out mammals, and join the species metadata. 
+
+**Exports**
+
++ `Standard_routes_lines.txt`
+
+## `Standard_routes_descriptive.Rmd`
+
+The script `Standard_routes_descriptive.Rmd` imports `Standard_routes_lines.txt` and the file `JKP_karta.RDS`. It subsets the `Standard_routes_lines.txt` to the routes in Jönköping and produces summary statistics for the years 2009 - 2018 for all bird on the line counts.
+
+--> to be consistent this could be 2012-2018 but as I calculate yearly averages I doubt it changes anything. 
+
+**Exports**
+
++ `Bird_stats.csv`
+
+`Bird_stats.csv` gives the average proportion of routes on which a species is encountered per year as well as the average abundance per year across all routes. The statistic is calculated the years 2009 - 2018 and the routes in the Jönköping study region. 
+
+
+## `Species_matrix.Rmd`
+
+imports `Standard_routes_lines.txt`
+imports `Bird_stats.csv`
+
+The script takes the cleaned line counts and the summary statistic for bird abundance and prevalence. It filters out rare birds and birds that we do not expect to react to the habitats that we model. 
+
+### rare birds
+The birds that we exclude because of rarity are the following
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+Bird_summary <-  read_csv2(here("data", "Bird_stats.csv"))
+
+rare_birds <- 
+Bird_summary %>% 
+  filter(type == "linecounts") %>% 
+  filter(abundance < 5 | proportion < 5) %>% 
+  select(englishname, proportion, abundance) %>% 
+  arrange(desc(abundance)) %>% 
+  mutate(across(is.numeric, function(x) signif(x,2))) 
+
+rare_birds %>% 
+kable(col.names = c("Species", "average prevalence", "average abundance"),
+        caption = "Species excluded by rarity") %>% 
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+  
+
+```
+
+
+
+### other excluded birds
+
+The following birds were exclude because we assumed that either focal variables in this study (Forest & agricultural land) were unlikely to predict their distribution or that the scale at which we study the landscape composition is not relevant for these species (large birds of prey)
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+gulls = tibble(Species = c("Common gull","Black-headed gull", "Herring gull",  "Lesser black-backed gull",
+          "Common tern", "Great black-backed gull","Arctic tern","Little gull"),
+          Group = "Gulls")
+          
+
+other_on_water = tibble(Species = c("Great cormorant","Black-throated diver","Goosander",
+                   "Red-breasted merganser", "Red-throated diver", "Great crested grebe","Red-necked phalarope",
+                   "Shelduck", "Black guillemot", "Coot", "Slavonian grebe", "Mute swan", "Grey heron", "Common sandpiper"),
+                   Group = "Other on water")
+                   
+
+ducks = tibble(Species = c("Mallard", "Eider", "Goldeneye","Tufted duck","Teal", "Common scoter",
+          "Wigeon", "Velvet scoter", "Long-tailed duck", "Gadwall"),
+          Group = "Ducks")
+
+geese = tibble(Species = c("Barnacle goose","Greylag goose","Canada goose", "Brent goose", "Bean goose"),
+             Group = "Geese")
+
+domestic = tibble(Species = c("Pheasant"),
+                  Group = "Domestic")
+
+BOPs = tibble(Species = c("Marsh harrier", "Sparrowhawk", "Red kite", "Buzzard", "Goshawk","Rough-legged buzzard","Osprey", "White-tailed eagle","Golden eagle", "Hobby", "Honey buzzard", "Raven" ),
+                    Group = "Bird of prey")
+
+stream_specialist = tibble(Species = c("Dipper"),
+                           Group = "Stream specialist") 
+
+other_excl <- 
+list(gulls, other_on_water, ducks, geese, stream_specialist, BOPs, domestic) %>% 
+  bind_rows() 
+
+other_excl %>% 
+  kable(caption = "Species excluded by group") %>% 
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+
+```
+
+### brids kept
+We kept the following birds in the analysis
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+
+Bird_summary %>% 
+  filter(type == "linecounts") %>% 
+  filter(!englishname %in% rare_birds$englishname) %>% 
+  filter(!englishname %in% other_excl$Species) %>% 
+  select(englishname, proportion, abundance) %>% 
+  arrange(desc(abundance)) %>% 
+  mutate(across(is.numeric, function(x) signif(x,2))) %>% 
+  mutate(abund_rank = 1:n()) %>% 
+  kable(col.names = c("Species", "average prevalence", "average abundance", "abundance rank"),
+        caption = "Species kep") %>% 
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+  
+```
+
+Besides filtering out the species above, the script also 
+
++ subsets the data to the years for which we have agricultural data (2012-2018)
++ excludes some lines that haven't been counted in a given year.
+
+For the latter, we need to distinguish between true zeros (counted but no bird observed) and false zeros (not counted). We use the following heuristic:
+
+1) if it has a time, we consider it as counted (True zero)
+2) if it has no time, but has an abundance we keep it
+3) if it has no time and no abundance in a given year we exclude it. (missing value)
+
++ the script also excludes all line x year combinations were the route has been counted to less than 70% in a given year. 
+
++ the script also sums the abundances for *Loxia sp.*: 
+
+*Loxia curvirostra* ("Crossbill") and *Loxia pytyopsittacus* ("Parrot crossbill") are very hard to distinguish wherefore they can also be reported as *Loxia sp* ("crossbill sp"). We lump all three entries as "Crossbill" and sum the abundances. 
+
+The cleaned and filtered data are exported as `Bird_spec_matrix_lines_filtered_Sweden.tsv`
+
+# LandUse Data
+
+We use two type of LandUse data 
+
+1) the Swedish Landcover data (NMD)
+
+`nmd2018bas_ogeneraliserad_v1_0.tif`
+
+```{r, echo=FALSE, out.width="80%", out.height="80%", fig.cap="NMD landuse classes"}
+knitr::include_graphics(here("plots", "NMD_baskartering.png"))
+```
+
+
+
+2) the agricultural application data for the years 2012-2018
+
+Files:
+
+`2012.gpkg`
+`2013.gpkg`
+`2014.gpkg`
+`2015.gpkg`
+`2016.gpkg`
+`2017.gpkg`
+`2018.gpkg`
+
+The agricultural application data are distinct from the blockdata in that they contain the exact location of each crop in a separate polygon. (The blockdata can contain several crops in the same polygon).
+
+## `Rasterize_application_data.Rmd`
+
+**Imports** 
+
+`nmd2018bas_ogeneraliserad_v1_0.tif`
+`2012.gpkg` - `2018.gpkg`
+
+**Exports**
+
+`2012.tif` - `2018.tif`
+
+The script takes the shapefiles and rasterises them with the NMD as template so that resolution and extent match
+
+## `SJB_characterization.Rmd`
+
+**Imports**
+
+`stdruttLinjer.shp`
+
++ contains the exact coordinates of the lines (in RT90 format - the original coordinate system in which the monitoring routes have been planned)
+
+`nmd2018bas_ogeneraliserad_v1_0.tif`
+
+`2012.gpkg` - `2018.gpkg`
+
+**exports**
+
+`LandUse_lines_500m.Rds`
+
+1) The script stacks the NMD with and the agricultural application data to a single raster stack. 
+
+2) It constructs a buffer around the lines with 500m width (250m on each side of the line) and splits the corners with an 45° angle
+
+```{r, echo=FALSE, out.width="50%", out.height="50%", fig.cap="Karta 02C2H - example for line buffer"}
+knitr::include_graphics(here("plots", "linebuffer.jpeg"))
+```
+
+
+3) it extracts the number of pixel in each buffer from each of the classes in the raster stack (NMD + agricultural data) given a timeseries of landuse for 2012-2018 for each buffer.
+
+--> NMD is static
+
+--> class clearcut is taken from NMD, not from clearcut data and is therefore static, too.
+
+The landuse is exported in `LandUse_lines_500m.Rds`
+
+
+## `Join_LandUses.Rmd`
+
+**Imports** 
+
+`LandUse_lines_500m.Rds`
+
+`crop_codes_english.xlsx`
+
++ contains the crops corresponding to the crop codes
+
+```{r, echo=FALSE, out.width="70%", out.height="70%", fig.cap="distribution of cropcodes (average of all years"}
+knitr::include_graphics(here("plots", "crop_code_dist.jpg"))
+```
+### group crop codes
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+
+read_tsv(here("crop_groupings.txt")) %>% 
+  kable(col.names = c("Landuse code", "crop name", "crop group", "% cover / crop", "% cover / crop group"),
+        caption = "grouping of crop codes") %>% 
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+  
+```
+
+```{r, echo=FALSE, out.width="60%", out.height="60%", fig.cap="distribution of crop groups (average of all years"}
+knitr::include_graphics(here("plots", "crop_groups.jpg"))
+```
+
+### group NMD
+
+```{r, echo=FALSE, out.width="60%", out.height="60%", fig.cap="distribution of NMD classes"}
+knitr::include_graphics(here("plots", "NMD_code_dist.jpg"))
+```
+
+For the NMD, we reclassify as follows: 
+
+-> we do not distinguish between forest on wetland and forest on dry land
+
+-> we do not distinguish between 
+
+51  Exploaterad mark, byggnad		
+52	Exploaterad mark, ej byggnad eller väg/järnväg		
+53	Exploaterad mark, väg/järnväg
+
+
+```{r, echo=FALSE, out.width="60%", out.height="60%", fig.cap="distribution of NMD groups"}
+knitr::include_graphics(here("plots", "NMD_groups.jpg"))
+```
+
+### join landuse data
+
+The NMD contains the LandUse class `3 (Åkermark)` onto which we match the data from SJB. 
+
+However the match is not perfect (because the NMD has taken the blockdata - not the application data as template and because & because the exact polygones change a bit between the years while the NMD does not)
+
+1) **We let the SJB data take over the NMD data**
+
+The one class that doesn't match the class `3 (Åkermark)` is `Pasture`. This is because `Pasture` is an additional layer in the NMD. 
+
+2) **Pasture is split between pasture with some sort of tree `Pasture_w_Trees` cover and pasture without tree cover**
+
+3) SJB Landuse class `Woody_crops` is replaced by class `115	Triviallövskog (utanför våtmark)`
+
+Not all pixel that are coded `3 Åkermark`in the NMD are covered by the SJB. It's seldom much (see above) but we need to deal with it. 
+
+4) We declare the remaining `Åkermark` as `Övrig_öppen_mark_med_vegetation`
+
+```{r, echo=FALSE, fig.cap="distribution of Landuse groups (by year)"}
+knitr::include_graphics(here("plots", "LandUse_groups.jpg"))
+```
+# Climate Data
+
+## `pull_worldclim_data.Rmd`
+
+The **script** `pull_worldclim_data.Rmd` imports the (19) WorldClim Bioclimatic variables for WorldClim version 2 for the two tiles covering Sweden in 30s resolution (~1km^2)
+
+It then merges the tiles and crops the raster to the contours of Sweden (taken from the 'GADM' database) 
+
+**export**
+
+`WordClimSweden05.tif`
+
+## `Worldclim_characterization.Rmd`
+
+**Imports**
+
+`WordClimSweden05.tif`
+
+`Standard_routes_geo.gpkg`
+
+The Worldclim data contains the following 19 Bioclimatic variables
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+tibble(
+"BIO1"= "Annual Mean Temperature",
+"BIO2"= "Mean Diurnal Range (Mean of monthly (max temp - min temp))",
+"BIO3"= "Isothermality (BIO2/BIO7) (* 100)",
+"BIO4"= "Temperature Seasonality (standard deviation *100)",
+"BIO5"= "Max Temperature of Warmest Month",
+"BIO6"= "Min Temperature of Coldest Month",
+"BIO7"= "Temperature Annual Range (BIO5-BIO6)",
+"BIO8"= "Mean Temperature of Wettest Quarter",
+"BIO9"= "Mean Temperature of Driest Quarter",
+"BIO10"= "Mean Temperature of Warmest Quarter",
+"BIO11"= "Mean Temperature of Coldest Quarter",
+"BIO12"= "Annual Precipitation",
+"BIO13"= "Precipitation of Wettest Month",
+"BIO14"= "Precipitation of Driest Month",
+"BIO15"= "Precipitation Seasonality (Coefficient of Variation)",
+"BIO16"= "Precipitation of Wettest Quarter",
+"BIO17"= "Precipitation of Driest Quarter",
+"BIO18"= "Precipitation of Warmest Quarter",
+"BIO19"= "Precipitation of Coldest Quarter") %>% 
+  pivot_longer(cols = everything())%>% 
+  kable(col.names = c("Bioclimatic variable", "Description"),
+        caption = "Worldclim2 Bioclimatic variables") %>% 
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+```
+
+the script `Worldclim_characterization.Rmd` extracts the values for all climatic variables in a 1km buffer around the routes (4x4 km) and averages teh variable number for each route. 
+
+the data are exported as
+
+`WorldClimRoutes.csv`
+
+We use the following two variable for modelling:
+
++ `BIO5` *Max Temperature of Warmest Month*
++ `BIO 12` *Annual Precipitation*
+
+
+
+```{r, echo=FALSE, fig.cap="Worldclim for Jönköping - with route centroids"}
+knitr::include_graphics(here("plots", "Worldclim_jkp.jpg"))
+```
+
+# Bird model
+## `Bird_SMD_HMSC.Rmd`
+
+**Imports**
+
+`Bird_spec_matrix_lines_filtered_Sweden.tsv`
+
+`LandUse_joint_lines.csv`
+
+`WorldClimRoutes.csv`
+
+The current model aggregates the LandUse classes further:
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+list(
+tibble( group = "Lövskog",
+       Landuse = c("Ädellövskog",
+                 "Triviallövskog",
+                 "Triviallövskog_med_ädellövinslag")),
+tibble(group = "Barrskog",
+       Landuse = c("Lövblandad_barrskog",
+                 "Tallskog",
+                 "Granskog",
+                 "Barrblandskog")),
+tibble(group = "Cereal",
+       Landuse = c("Spring_cereal",
+                   "Winter_cereal",
+                   "Tuber_Root")),
+tibble(group = "Open", 
+       Landuse = c("Fallow",
+                   "Öppen_våtmark",
+                   "Övrig_öppen_mark_med_vegetation",
+                   "Övrig_öppen_mark_utan_vegetation")),
+tibble(group = "Clearcut",
+       Landuse = "Temporärt_ej_skog")) %>% 
+  bind_rows() %>% 
+  kable(caption = "larger grouping of Landuses") %>% 
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "300px")
+
+```
+
+
++ The classes `Sjö_och_vattendrag`, `Hav`, `exploaterad mark`and the agricultural class `Other` are not modelled (for now). 
+
++ Lines were the summed LandUse classes make up less than 60% of the total landuse are excluded.
+
+```{r, echo=FALSE, fig.cap="distribution of variables across buffers"}
+knitr::include_graphics(here("plots",  "var_dist_buffers.jpeg"))
+```
+
+```{r, echo=FALSE, fig.cap="correlation of model fixed effects"}
+knitr::include_graphics(here("plots", "var_cor.jpg"))
+```
+
+## random effects
+
+We fit the model with three random effects:
+
+1) spatial random effect of `karta`
+
++ the effect is fitted providing the coordinates of the *route centroids*
+
+2) temporal random effect of `year`
+
++ the effect is also fitted "spatially explicit" i.e. providing a 1-d matrix of years
+
+3) random effect of line
+
++ taking `karta::line` combination as unique factor level
+
+**the model is fitted as presence/absence using a 'probit' distribution.**
+
+## model fit
+
+```{r, echo=FALSE, fig.cap="model fit statistic for all species"}
+knitr::include_graphics(here("model", "figures", "fit.jpg"))
+```
+```{r, echo=FALSE, fig.cap="model fit statistic for all species"}
+knitr::include_graphics(here("model", "figures", "fit_by_spec.jpg"))
+```
+
+## variance partitioning
+
+```{r, echo=FALSE, fig.cap="variance partitioning"}
+knitr::include_graphics(here("model", "figures", "varpar_stacked.jpg"))
+```
+
+
+## residual species association
+
+```{r, echo=FALSE, fig.cap="residual species associations"}
+knitr::include_graphics(here("model", "figures", "resi_corr_stacked.jpg"))
+```
+
+## Beta parameter estimates
+
+```{r, echo=FALSE, fig.cap="Parameter estimates"}
+knitr::include_graphics(here("model", "figures", "beta_estimates.jpg"))
+```
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+
+table <- 
+read_tsv(here("data", "betapar,txt")) %>% 
+  dplyr::select(one_of("bird", "fixed_effect"), starts_with("0")) %>% 
+  mutate(across(where(is.numeric), round, 2)) %>% 
+  arrange(bird) 
+
+table_sig <- 
+  table %>% 
+    mutate(sig = case_when(`0.5` < 0 & `0.9` < 0 ~ TRUE,
+                           `0.5` > 0 & `0.1` > 0 ~ TRUE,
+                           TRUE ~ FALSE)) %>% 
+    pull(sig)
+
+table %>% 
+  kable(col.names = c("Species", "fixed effect", "q_2.5%", "Median", "q_97.5%"),
+        caption = "Beta parameters") %>% 
+  column_spec(c(3:5), bold = table_sig) %>% 
+  kable_styling() %>%
+  scroll_box(width = "100%", height = "600px")
+
+
+```
