@@ -16,78 +16,41 @@ library(ggplot2)
 library(here)
 ```
 
+
 load bird data for Standard routes
 ```{r}
-Standard_data <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_totalstandard.xlsx")
-#Standard_geo <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_standardrutter_koordinater.xlsx")
-species_codes <- read_xlsx("/Volumes/Fabian_Work/bird_routes/public_eurolist.xlsx")
+Standard_data <- read_xlsx(here("data", "bird_routes", "public_totalstandard.xlsx"))
+Standard_geo_lines <- read_sf(here("data", "Standardrutter-shapefiler", "stdruttLinjer.shp"))
+Standard_geo_points <- read_sf(here("data", "Standardrutter-shapefiler", "stdruttPunkter.shp"))
+species_codes <- read_xlsx(here("data", "bird_routes", "public_eurolist.xlsx"))
 ```
+
 
 ## reformat geo data
-
-add coordinates for each point and line count
-
 ```{r}
-
-# use sweref coordinates and transform to simple feature DF with SWEREF projection
-Standard_geo <- 
-Standard_geo %>% select(karta, matches("sweref99")) %>% 
-  gather(Coord, value, -karta) %>% 
-  mutate(position = gsub("(.)_sweref99_.", "\\1", Coord)) %>% 
-  mutate(Coord = case_when(grepl("_n", Coord) ~ "LAT",
-                           grepl("_o", Coord) ~ "LONG")) %>% 
-  spread(Coord, value) %>% 
-  st_as_sf(coords = c("LONG", "LAT"), crs = "+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
-
-# filter out coordinate for lower left corner, dropping centre
-Standard_geo_point <- 
-  Standard_geo %>% 
-  filter(position == "p1") %>% 
-  select(-position) 
-
-# expand df to 8 points per route (pointcounts)
-Standard_geo_point <- 
-  Standard_geo_point %>% 
-  left_join(.,
-            tibble(karta = rep(Standard_geo_point$karta, each = 8),
-                   position = rep(c(paste("p", 1:8, sep = "")), 
-                                  length(Standard_geo_point$karta)))) 
-
-# calculate position of each point in reference to starting point. 
-# the route always goes first north then east, each side is 2 km.
-# there is a point count at each corner and halways for each side
-
-Standard_geo_point <- 
-Standard_geo_point %>% 
-  mutate(geo = ifelse(position == "p1", geometry, 
-                    ifelse(position == "p2", geometry+c(0,1000),
-                    ifelse(position == "p3", geometry + c(0,2000),
-                    ifelse(position == "p4", geometry + c(1000,2000),
-                    ifelse(position == "p5", geometry + c(2000,2000),
-                    ifelse(position == "p6", geometry + c(2000,1000),
-                    ifelse(position == "p7", geometry + c(2000,0),
-                    geometry + c(1000,0))))))))) %>% 
-  st_drop_geometry %>% 
-  st_as_sf() %>% 
-  rename(geometry = geo) %>% 
-  mutate(type = "point")
-  
-
-Standard_geo_lines <- 
-  Standard_geo_point %>% 
-    group_by(karta) %>% 
-    slice(c(1,rep(2:n(), each = 2), 1)) %>% 
-    mutate(position = rep(paste("l", 1:(n()/2), sep = ""), each = 2)) %>% 
-    group_by(karta, position) %>% 
-    summarize() %>%
-    st_cast("LINESTRING") %>% 
+Standard_geo_lines <-
+Standard_geo_lines %>% 
+  st_set_crs(3021) %>% #RT90 projection
+  st_transform(3006) %>% #reproject to SWEREF 
+  select(KARTA, LINJE, geometry) %>% 
+  rename(karta = "KARTA", position = "LINJE") %>% 
+  mutate(position = gsub("L", "l", position)) %>% 
   mutate(type = "line")
 
-Standard_geo <- 
-  rbind(Standard_geo_point, Standard_geo_lines) %>% 
-  st_set_crs("+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
+Standard_geo_points <-
+  Standard_geo_points %>% 
+  st_set_crs(3021) %>% #RT90 projection
+  st_transform(3006) %>% #reproject to SWEREF 
+  select(KARTA, PUNK, geometry) %>% 
+  rename(karta = "KARTA", position = "PUNK") %>% 
+  mutate(position = gsub("P", "p", position)) %>% 
+  mutate(type = "point")
 
+Standard_geo <-
+  rbind(Standard_geo_lines, Standard_geo_points)
+  
 ```
+
 
 ## plot example
 
