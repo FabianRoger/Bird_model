@@ -25,11 +25,22 @@ Standard_points <- read_tsv(here("data", "Standard_routes_points.txt"))
 Standard_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
 ```
 
+Jönköping study region
+```{r}
+JKP_karta <- readRDS(here("data", "JKP_karta.RDS"))
+
+Standard_lines <- Standard_lines %>% filter(karta %in% JKP_karta)
+Standard_points <- Standard_points %>% filter(karta %in% JKP_karta)
+Standard_geo <- Standard_geo %>% filter(karta %in% JKP_karta)
+
+```
 
 
 ### how many routes have been counted each year
 
 ```{r}
+
+nroutes <- Standard_points$karta %>% unique %>% length
 
 Standard_points %>% 
   select(yr, karta) %>% 
@@ -38,7 +49,11 @@ Standard_points %>%
   mutate(n = n()) %>% 
   ggplot(aes(x = yr, y = n))+
   geom_line()+
+  geom_hline(yintercept = nroutes, colour = "darkred", linetype = "dashed")+
   geom_point()
+
+
+
 
 ```
 
@@ -116,10 +131,10 @@ spec_rank_plot <-
   ggplot(aes(x= rank, y = abundance, label = englishname))+
   geom_point(aes(colour = type))+
   geom_hline(yintercept = c(1,10), colour = "darkred", linetype = "dashed")+
-  geom_text(data = tibble(rank = 10, 
+  geom_text(data = tibble(rank = 30, 
                           abundance = c(1.5,15),
-                          label = c("1 observation per year in Sweden",
-                                               "10 observations per year in Sweden")),
+                          label = c("1 observation per year",
+                                               "10 observations per year")),
             aes(x = rank, label = label),
             hjust = "left")+
   scale_y_log10()+
@@ -186,8 +201,8 @@ spec_prev_plot <-
   ggplot(aes(x = rank, y = proportion, label = englishname))+
   geom_point(aes(colour = type))+
   geom_hline(yintercept = c(10,1), colour = "darkred", linetype = "dashed")+
-  geom_text(data = tibble(rank = 10, 
-                          proportion = c(1.5,0.15),
+  geom_text(data = tibble(rank = 55, 
+                          proportion = c(15,1.5),
                           label = c("observed on 10% of the routes on average",
                                     "observed on 1% of the routes on average")),
             aes(x = rank, label = label),
@@ -247,11 +262,12 @@ ggplotly(cv_abund, tooltip = c("englishname"))
 
 #### rare species 
 
-species that have been observed on average ≤ 1 times in the last 10 years in Sweden
+species that have been observed on average ≤ 1 times in the last 10 years in the study region
 
 ```{r}
 
 av_bird_abundance %>% 
+  filter(type == "pointcounts") %>% 
   filter(abundance <=1) %>% 
   right_join(distinct(dplyr::select(Standard_lines, lat6, genus, species)), .)
 
@@ -294,6 +310,7 @@ av_bird_presence %>%
   select(-rank) 
 
 write_csv2(Bird_summary, here("data", "Bird_stats.csv"))
+
 ```
 
 ### proportion of points counted
@@ -332,4 +349,3 @@ write_sf(points_not_counted, here("data", "Points_counted.gpkg"))
 write_sf(lines_not_counted, here("data", "Lines_counted.gpkg"))
   
 ```
-
