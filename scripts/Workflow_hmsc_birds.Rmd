@@ -44,11 +44,11 @@ Imports :
 
 `stdruttPunkter.shp`
 
-+ polygone of routes
++ polygon of routes
 
 `prodzon2.shp`
 
-+ Agricultural production regions as defined by SBC
++ Agricultural production regions as defined by Statistikmyndigheten SCB 
 
 Exports : `JKP_karta.RDS`
 
@@ -74,7 +74,7 @@ knitr::include_graphics(here("plots", "route_selection.png"))
 
 + Breeding bird survey 1996 - 2018
 
-`public_standardrutter_koordinater.xlsx` (should be replaced by `stdruttLinjer.shp`)
+`stdruttLinjer.shp` and `stdruttPunkter.shp` 
 
 + Route coordinates
 
@@ -178,7 +178,7 @@ other_excl %>%
 
 ```
 
-### brids kept
+### birds kept
 We kept the following birds in the analysis
 
 ```{r, echo = FALSE, message=FALSE, warning=FALSE}
@@ -418,7 +418,7 @@ the data are exported as
 
 `WorldClimRoutes.csv`
 
-We use the following two variable for modelling:
+We use the following two variable for modeling:
 
 + `BIO5` *Max Temperature of Warmest Month*
 + `BIO 12` *Annual Precipitation*
@@ -505,10 +505,12 @@ We fit the model with three random effects:
 ## model fit
 
 ```{r, echo=FALSE, fig.cap="model fit statistic for all species"}
-knitr::include_graphics(here("model", "figures", "fit.jpg"))
+#knitr::include_graphics(here("model", "figures", "fit.jpg"))
 ```
+
+
 ```{r, echo=FALSE, fig.cap="model fit statistic for all species"}
-knitr::include_graphics(here("model", "figures", "fit_by_spec.jpg"))
+#knitr::include_graphics(here("model", "figures", "fit_by_spec.jpg"))
 ```
 
 ## variance partitioning
@@ -521,7 +523,10 @@ knitr::include_graphics(here("model", "figures", "varpar_stacked.jpg"))
 ## residual species association
 
 ```{r, echo=FALSE, fig.cap="residual species associations"}
-knitr::include_graphics(here("model", "figures", "resi_corr_stacked.jpg"))
+knitr::include_graphics(here("model", "figures", "resi_corr_stacked_m1.jpg"))
+```
+```{r, echo=FALSE, fig.cap="residual species associations"}
+knitr::include_graphics(here("model", "figures", "resi_corr_stacked_m2.jpg"))
 ```
 
 ## Beta parameter estimates
@@ -533,10 +538,10 @@ knitr::include_graphics(here("model", "figures", "beta_estimates.jpg"))
 ```{r, echo = FALSE, message=FALSE, warning=FALSE}
 
 table <- 
-read_tsv(here("data", "betapar,txt")) %>% 
-  dplyr::select(one_of("bird", "fixed_effect"), starts_with("0")) %>% 
+read_tsv(here("data", "betapar.txt")) %>% 
+  dplyr::select(one_of("bird", "fixed_effect", "model"), starts_with("0")) %>% 
   mutate(across(where(is.numeric), round, 2)) %>% 
-  arrange(bird) 
+  arrange(bird, fixed_effect, model) 
 
 table_sig <- 
   table %>% 
@@ -546,7 +551,7 @@ table_sig <-
     pull(sig)
 
 table %>% 
-  kable(col.names = c("Species", "fixed effect", "q_2.5%", "Median", "q_97.5%"),
+  kable(col.names = c("Species", "fixed effect", "model", "q_2.5%", "Median", "q_97.5%"),
         caption = "Beta parameters") %>% 
   column_spec(c(3:5), bold = table_sig) %>% 
   kable_styling() %>%
