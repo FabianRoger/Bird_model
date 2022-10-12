@@ -1,0 +1,267 @@
+---
+title: "Rasterize the application data (2012-2018)"
+output: html_notebook
+---
+
+R code to check for abandonment of agricultural blocks and their transformation, especially afforestation. 
+
+```{r, message = FALSE}
+library(sf)
+library(raster)
+library(fasterize)
+library(tidyr)
+library(dplyr)
+library(here)
+library(future.apply)
+```
+
+load NMD
+```{r}
+NMD <- raster(here("data", "NMD", "nmd2018bas_ogeneraliserad_v1_0.tif"))
+```
+
+function to subdivide the large NMD raster into smaller raster
+
+`ext` takes the raster extent of the original raster
+`n_x` takes the number of tiles in x direction that the raster should be divided into
+`n_y` takes the number of tiles in y direction that the raster should be divided into
+
+the function gives a list of length n_x * n_y with extent objects covering the original raster. The list can be used to crop the raster into smaller raster
+
+
+(I also found the `SpaDES.tools::splitRaster` function which does the same than this handcrafted approach)
+
+```{r}
+
+divide_raster <- function(ext, n_x, n_y){
+  
+  x_vals <- seq(ext@xmin, ext@xmax, length.out = n_x+1)
+  y_vals <- seq(ext@ymin, ext@ymax, length.out = n_y+1)
+  
+  x_vals_list <- x_vals[c(1, rep(2:n_x, each = 2), n_x+1)] %>% split(rep(1:n_x, each = 2))
+  y_vals_list <- y_vals[c(1, rep(2:n_y, each = 2), n_y+1)] %>% split(rep(1:n_y, each = 2))
+  
+  crossing(x_vals_list, y_vals_list) %>% 
+  apply(1, function(x) extent(x$x_vals_list, x$y_vals_list))
+  
+}
+
+```
+
+
+crop the NMD raster into 25 tiles
+
+```{r}
+dir.create(here("data", "NMD", "NMD_tiles"))
+
+plan(multiprocess, workers = 4)
+
+ext_list <- divide_raster(extent(NMD), 10, 10)
+
+future_sapply(
+  seq_along(ext_list), function(x) {
+    crop(NMD, ext_list[[x]], 
+         filename = here("data", "NMD", "NMD_tiles", 
+                         paste("NMD_tile_", formatC(x, width = 2, flag = 0), 
+                               ".tif", sep = "")))
+  }
+  )
+
+```
+
+we need to split the shape file into chunks that fit the extent of the raster tiles 
+as a shape can fall on the border between two or more raster tiles, we 
+```{r}
+
+fasterize_tiles <- function(Tiles, SF, path, ncores){
+  
+  #Tiles = list of raster
+  #SF = simple feature polygones df to rasterize
+  #path = were to write the rasterized SF to
+  
+  plan(multiprocess, workers = ncores)
+  
+  future_sapply(seq_along(Tiles), function(x){
+    
+    ext <- extent(Tiles[[x]])
+    shp <- filter(SF, xmax >= ext@xmin & xmin <= ext@xmax & ymax >= ext@ymin & ymin <= ext@ymax)
+    
+    field <- c("GRDKOD_MAR", "MYGRODKOD") #the field changed name in 2015
+   
+    
+     if(nrow(shp) > 0) { 
+    shp_r <- fasterize(sf = shp, 
+                       raster = Tiles[[x]], 
+                       field = field[ which( field %in% colnames( SF))], 
+                       fun = "first", 
+                       background = NA_real_) 
+    
+    writeRaster(shp_r, filename = paste(path, paste(deparse(substitute(SF)), x, ".tif", sep = ""), sep ="/"))
+    rm(shp_r)}
+    return(NULL)
+  }
+  
+  )
+  
+}
+        
+
+```
+
+
+fasterize first parcel data (2012)
+```{r}
+#list of raster tiles
+NMD_list <- list.files(here("data", "NMD", "NMD_tiles"))
+NMD_list <- NMD_list[grepl(".tif$",NMD_list)]
+NMD_list <- lapply(NMD_list, function(x) raster(here("data", "NMD", "NMD_tiles", x)))
+
+#path to shapefiles shapefiles
+path <- "/Volumes/Fabian_Work/Sverige/Application_data/"
+files <- list.files(path)
+
+#path for rasterized shapefiles
+path.out <- here("data", "NMD", "Rastershapes")
+
+dir.create(path.out)
+
+#load first shapefile
+block2012 <- st_read(paste0(path, files[[1]]))
+
+#fasterize in tiles in parallel
+
+fasterize_tiles(Tiles = NMD_list, SF = block2012, path = path.out, ncores = 4)
+
+```
+
+check if all files have colums for the bounding blocks of each polygon, if not add and re-save
+
+```{r}
+
+#path to shapefiles shapefiles
+path <- "/Volumes/FABIAN_USB/Application_data/"
+
+plan(multiprocess, workers = 4)
+  
+
+files <- list.files(path)
+
+for (i in files) {
+  
+ SF <-  st_read(paste0(path, i))
+ 
+  if(!"xmax" %in% colnames(SF)){
+    
+    g <- st_geometry(SF)
+    
+    g_bbox <- 
+      future_lapply(g, st_bbox) %>% 
+      do.call("rbind", .) %>% 
+      as_tibble() 
+    
+    SF_new <- cbind(as_tibble(SF), g_bbox) %>% 
+      st_as_sf()
+  
+    write_sf(SF_new, paste0(path, i))
+    
+  }
+  
+}
+
+```
+
+
+
+fasterize remaining parcel data (2013-2018)
+```{r}
+#list of raster tiles
+NMD_list <- list.files(here("data", "NMD", "NMD_tiles"))
+NMD_list <- NMD_list[grepl(".tif$",NMD_list)]
+NMD_list <- lapply(NMD_list, function(x) raster(here("data", "NMD", "NMD_tiles", x)))
+
+#path to shapefiles shapefiles
+path <- "/Volumes/Fabian_Work/Sverige/Application_data/"
+files <- list.files(path)
+
+for(i in files){
+  
+  SF <- st_read(paste0(path, i))
+  
+  year <- gsub("(\\d+).gpkg", "\\1", i)
+  
+  path.out <- here("data", "NMD", "Rastershapes", year)
+  
+  dir.create(path.out)
+  
+  fasterize_tiles(Tiles = NMD_list, 
+                  SF = SF, 
+                  path = path.out, 
+                  ncores = 4)
+  
+}
+
+```
+
+
+## merge raster
+
+```{r}
+
+rasterS <- list.files(here("data","NMD","Rastershapes"))
+
+plan(multiprocess, workers = 4)
+
+future_lapply(rasterS, function(x) {
+  path_merge <- here("data","NMD","Rastershapes", x)
+  files <- list.files(path_merge, pattern = ".tif$")
+  merge.list <- lapply(paste(path_merge,files,sep = "/"), raster)
+  do.call(merge, c(merge.list, filename = paste0(here("data","SJB", x), ".tif")))
+})
+
+plan(sequential)
+```
+
+## recode raster
+
+because I didn't pay attention to the fact that fasterize will take the *factor level* and not the numerical value of the LandUse code (because I didn't convert it to a numeric variable first), we need to recode the raster values. 
+
+for that we read in the application shapefiles, create a conversion matrix from factor level to numerical value and recode the raster accordingly
+
+```{r}
+
+path_to_shapes <- "/Volumes/Fabian_Work/Sverige/Application_data"
+shapefiles <- list.files(path_to_shapes, pattern = ".gpkg$")
+
+field <- c("GRDKOD_MAR", "MYGRODKOD")
+
+plan(multiprocess, workers = 4)
+
+conv_list <- 
+  future_lapply(shapefiles, function(x) {
+  
+  SHAPE <- st_read(paste(path_to_shapes, x, sep = "/"))
+  
+  field <- field[ which( field %in% colnames(SHAPE))]
+  
+  tibble( from = as.numeric(as.factor(unique(as.data.frame(SHAPE)[,field]))),
+          to = as.numeric(as.character(unique(as.data.frame(SHAPE)[,field]))))
+  
+    })
+
+raster_files <- list.files(here("data", "SJB"))
+raster_list <- lapply(raster_files, function(x) raster(here("data", "SJB", x)))
+
+plan(multiprocess, workers = 4)
+
+future_lapply(seq_along(raster_list), function(x){
+  
+reclassify( x = raster_list[[x]], 
+            rcl = as.matrix(conv_list[[x]]),
+            filename = here("data", "SJB", paste("recl", raster_files[x], sep = "")))  
+  
+})
+
+
+```
+
+
