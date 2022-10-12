@@ -13,10 +13,10 @@ library(sf)
 ```
 
 ```{r, eval = F}
-Standard_routes_points <- read_tsv(here("data", "Standard_routes_points.txt"))
+#Standard_routes_points <- read_tsv(here("data", "Standard_routes_points.txt"))
 Standard_routes_lines <- read_tsv(here("data", "Standard_routes_lines.txt"))
 Bird_summary <-  read_csv2(here("data", "Bird_stats.csv"))
-Points_geo <- st_read(here("data", "Points_counted.gpkg"))
+#Points_geo <- st_read(here("data", "Points_counted.gpkg"))
 Lines_geo <- st_read(here("data", "Lines_counted.gpkg"))
 
 ```
@@ -25,14 +25,14 @@ Jönköping study region
 ```{r}
 JKP_karta <- readRDS(here("data", "JKP_karta.RDS"))
 
-Standard_routes_points <- Standard_routes_points %>% filter(karta %in% JKP_karta)
-Standard_routes_lines <- Standard_routes_points %>% filter(karta %in% JKP_karta)
-Points_geo <- Points_geo %>% filter(karta %in% JKP_karta) 
+#Standard_routes_points <- Standard_routes_points %>% filter(karta %in% JKP_karta)
+Standard_routes_lines <- Standard_routes_lines %>% filter(karta %in% JKP_karta)
+#Points_geo <- Points_geo %>% filter(karta %in% JKP_karta) 
 Lines_geo <- Lines_geo %>% filter(karta %in% JKP_karta) 
 ```
 
 
-# Point counts
+
 
 ## filtering birds
 
@@ -58,7 +58,7 @@ Bird_summary %>%
 
 ```
 
-List of birds that are observed with either less than 5 individuals or on less than 5% routes (across Sweden)
+List of birds that are observed with either less than 5 individuals or on less than 5% routes  (across the study region)
 
 ```{r}
 
@@ -81,7 +81,7 @@ gulls = c("Common gull","Black-headed gull", "Herring gull",  "Lesser black-back
 
 other_on_water = c("Great cormorant","Black-throated diver","Goosander",
                    "Red-breasted merganser", "Red-throated diver", "Great crested grebe","Red-necked phalarope",
-                   "Shelduck", "Black guillemot", "Coot", "Slavonian grebe")
+                   "Shelduck", "Black guillemot", "Coot", "Slavonian grebe", "Mute swan", "Grey heron", "Common sandpiper")
 
 ducks = c("Mallard", "Eider", "Goldeneye","Tufted duck","Teal", "Common scoter",
           "Wigeon", "Velvet scoter", "Long-tailed duck", "Gadwall") # but e.g. goldeneye and teal nest in trees!
@@ -90,7 +90,7 @@ geese=c("Barnacle goose","Greylag goose","Canada goose", "Brent goose", "Bean go
 
 domestic=("Pheasant")
 
-large_BOPs=c("White-tailed eagle","Golden eagle") # our scales definitiely not relevant for these guys.
+BOPs=c("Marsh harrier", "Sparrowhawk", "Red kite", "Buzzard", "Goshawk","Rough-legged buzzard","Osprey", "White-tailed eagle","Golden eagle", "Hobby", "Honey buzzard", "Raven" ) # our scales not relevant here.
 
 stream_specialist<-c("Dipper") # possibly don't care so much about the land-use, potentially includes also grey wagtail as well as some waders.
 
@@ -101,7 +101,7 @@ non_target = c(gulls,
                ducks,
                geese,
                domestic,
-               large_BOPs,
+               BOPs,
                stream_specialist)
 
 ```
@@ -118,7 +118,6 @@ sort(exclude)
 
 exclude birds from data, filter to match years from blockdata (2012 - 2018)
 ```{r}
-
 # Standard_points_filt <- 
 # Standard_routes_points %>% 
 #   filter(yr %in% c(2012:2018)) %>% 
@@ -206,6 +205,21 @@ Standard_lines_filt <-
 We excluded `r nrow(Zero_counts)` point/line x year combinations that have a zero recorded birds and no recorded time
 We keep `r sum(Other_zero$n_0)` point/line x year combinations that have zero recorded birds but a recorded time (see `Other_zero` for details)
 
+## exclude partly counted lines
+not all lines can be counted fully, and the proportion of the lines counted is recored in `prop_counted`
+
+Here we exclude all lines that are counted to less than 70% - avoiding to model it explicitley as it doesn't concern too many lines.
+
+
+331 from 5158 Karta x line + yr combinations are counted less than 70% and excluded
+
+```{r}
+Standard_lines_filt <- 
+Standard_lines_filt %>% 
+  filter(prop_counted >= 7) 
+```
+
+
 wide format for species matrix
 
 ```{r}
@@ -222,7 +236,7 @@ Standard_lines_filt_wide <-
 
 ```
 
-*Loxia curvirostra* ("Crossbill") and *Loxia pytyopsittacus* ("Parrot crossbill") are very hard to distinguish wherefore they can also be reported as *Loxia sp* ("crossbill sp"). We lump all three entries as "Crossbill" and sum the
+*Loxia curvirostra* ("Crossbill") and *Loxia pytyopsittacus* ("Parrot crossbill") are very hard to distinguish wherefore they can also be reported as *Loxia sp* ("crossbill sp"). We lump all three entries as "Crossbill" and sum the observations.
 
 
 ```{r}
@@ -238,12 +252,12 @@ Standard_lines_filt_wide <-
 
 Standard_lines_filt_wide[,"Crossbill"] <- 
   rowSums(Standard_lines_filt_wide[,c("Crossbill", 
-                                       #"Parrot crossbill", #not in study region
-                                       "crossbill sp")])
+                                      "Parrot crossbill", #not in study region
+                                      "crossbill sp")])
 
 Standard_lines_filt_wide <- 
   Standard_lines_filt_wide %>% 
-  dplyr::select(#-"Parrot crossbill", 
+  dplyr::select(-"Parrot crossbill", 
                 -"crossbill sp") 
 
 ```
@@ -254,4 +268,52 @@ Standard_lines_filt_wide <-
 #write_tsv(Standard_points_filt_wide, here("data", "Bird_spec_matrix_points_filtered_Sweden.tsv"))
 write_tsv(Standard_lines_filt_wide, here("data", "Bird_spec_matrix_lines_filtered_Sweden.tsv"))
 ```
+
+## FBI categorization
+
+
+```{r}
+FBI <-readxl::read_xlsx(here("data", "species-classification-2018.xlsx"), skip = 5)
+species_codes <- read_xlsx(here("data", "bird_routes", "public_eurolist.xlsx"))
+
+#Corvus corone & cornix --> Corvus corone
+
+fbi_tax_gbif <- 
+lapply(FBI$Species, function(x) rgbif::name_backbone(name =x, 
+                rank = "species")) %>% 
+  bind_rows() %>% 
+  mutate(Species = FBI$Species)
+
+spec_codes_gbif <- 
+species_codes %>% 
+  dplyr::select(genus, species, englishname) %>% 
+  mutate(Species = paste(genus, species)) %>% 
+  pull(Species) %>% 
+  lapply(., function(x) rgbif::name_backbone(name =x, 
+                rank = "species")) %>% 
+  bind_rows() %>% 
+  mutate(Englishname = species_codes$englishname)
+
+FBI_meta <- 
+fbi_tax_gbif %>% 
+  dplyr::select(Species, species) %>% 
+  left_join(dplyr::select(spec_codes_gbif, species, Englishname)) %>% 
+  left_join(FBI) %>% 
+  filter(Englishname %in% Beta_est_sum$bird)
+
+FBI_meta$Englishname %>% sort
+
+species_codes %>% 
+  filter(grepl("Blue", englishname))
+
+FBI %>% 
+  filter(grepl("caeruleus", Species))
+
+sort(colnames(models$m7_thin120$Y))
+
+spec_codes_gbif %>% 
+  filter(grepl("Corvus", species)) #2487879 #8191482
+
+```
+
 
