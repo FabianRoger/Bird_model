@@ -12,16 +12,16 @@ library(here)
 library(readr)
 library(readxl)
 library(stringr)
-library(vegan)
+library(ggplot2)
 ```
 
-### read in LandUse type from different source Raster
+## read Data
 ```{r}
-LandUse <- readRDS(here("data", "LandUse_points_500m.Rds"))
-#LandUse <- readRDS(here("data", "LandUse_lines_500m.Rds"))
+#LandUse <- readRDS(here("data", "LandUse_points_500m.Rds"))
+LandUse <- readRDS(here("data", "LandUse_lines_500m.Rds"))
 ```
 
-### read in metadata
+### metadata
 
 ```{r}
 # metadata
@@ -36,30 +36,106 @@ NMD@data@attributes %>%
   mutate(Klass = iconv(as.character(Klass), "latin1")) %>% 
   rename(NMD = ID)
 
-#this selects the most recent definition of the crop_code if they have been redefined over the years. However, the meaning of the crop code doesn't change substantially in most cases and in no major case
-
 SJB_meta <- 
-  read_xlsx(here("data", "crop_codes_english.xlsx")) %>% 
-  rename(Landuse_code = `Landuse code`) %>% 
-  dplyr::select(Landuse_code, English) %>% 
-  distinct() %>% 
-  group_by(Landuse_code) %>% 
-  filter(row_number()==n())
+  read_xlsx(here("data", "crop_codes_english.xlsx")) %>%
+  rename(Landuse_code = `Landuse code`)
 
+#subset for jkp
+JKP_karta <- readRDS(here("data", "JKP_karta.RDS"))
 ```
 
 
-#### recode
+calculate summary statistics for Agricultural landuse used in line buffers in JKP
 
-get cropcodes and summarise cropcodes to 8 categories
+(average across all years)
+```{r}
+SJB_sum <- 
+LandUse %>% 
+  filter(karta %in% JKP_karta) %>% #subest to JKP for statistics
+  dplyr::select(starts_with("SJB"), "n") %>% 
+  pivot_longer(-n) %>% 
+  filter(!is.na(value)) %>% 
+  group_by(value) %>% 
+  summarise(n = sum(n)) %>% 
+  mutate(prct = signif((n / sum(n)) * 100, 2)) %>% 
+  rename(Landuse_code = "value") %>% 
+  mutate(Landuse_code = as.numeric(Landuse_code))
+```
 
-recode cropcodes in LandUse data
+
+get unique crop code definition:
+
+SJB_meta contains multiple definition if they changed over the years. However, the most recent definition is from 2012 and all our data are from 2012 onwards. 
+
+some cropcodes are not defined in 2012 but in the data. for these we take the most recent definition from previous years
+
+```{r}
+used_codes <- SJB_sum$Landuse_code
+
+#code not defined in 2012
+used_codes[!used_codes %in% {filter(SJB_meta, year == "2012") %>% pull(Landuse_code)}]
+```
+
+select most recent definition for each cropcode 
+```{r}
+SJB_meta <- 
+SJB_meta %>% 
+  arrange(Landuse_code, desc(year)) %>% 
+  group_by(Landuse_code) %>% 
+  slice(1)
+
+SJB_meta <- 
+left_join(SJB_sum, SJB_meta) 
+
+write_tsv(SJB_meta, here("data", "SJB_meta.txt"))
+```
+
+check for duplicates and undefined codes
+```{r}
+SJB_meta %>% 
+  group_by(English) %>% 
+  filter(n() > 1)
+```
+
+```{r}
+  SJB_meta %>% 
+  arrange(desc(prct)) %>% 
+  filter(!is.na(English)) %>% 
+  arrange(prct) %>% 
+  group_by(English) %>% 
+  mutate(prct = sum(prct)) %>% 
+  filter(Landuse_code != 62) %>% 
+  mutate(English = str_trunc(English, width = 30, "right")) %>%
+  mutate(English = factor(English, levels = .$English)) %>% 
+  mutate(prct_cum = cumsum(prct)) %>% 
+  mutate(col = case_when(prct_cum < 5 & prct_cum >= 1 ~ "less than 5%",
+                         prct_cum < 1 ~ "less than 1%",
+                         prct_cum > 50 ~ "more than 50%",
+                         prct_cum >= 5 & prct_cum <= 50 ~ "more than 95%")) %>% 
+  pivot_longer(starts_with("prc")) %>% 
+  ggplot(aes(x = English, y = value, colour = col))+
+  geom_point()+
+  facet_wrap(~name, scales = "free_x")+
+  coord_flip()+
+  theme_minimal()+
+  scale_color_brewer(palette = "Set1")+
+  labs(y = "percent (per group and cumulative)",
+       x = "crop",
+       title = "relative amount of each agriculural land cover - by cropcode")
+  
+ggsave(filename = here("plots", "crop_code_dist.jpg"), height = 8, width = 8)
+```
+
+
+## recode cropcodes
+
+get crop codes and summarise crop codes to 8 categories
 
 ```{r}
 
 # load cropcodes
-LandUse_SJB_groups <- 
-  read_csv2(here("data", "CropCodes.csv"))
+LandUse_SJB_groups <- SJB_meta
+
 
 #define groups
 LandUse_SJB_groups <-
@@ -81,9 +157,73 @@ LandUse <-
     LandUse_SJB_groups[ match( x, LandUse_SJB_groups$Landuse_code),]$crop_groups
   })
 
+#export crop code grouping
+LandUse_SJB_groups %>% 
+  select(Landuse_code, English, crop_groups, prct) %>% 
+  group_by(crop_groups) %>% 
+  mutate(group_prct = sum(prct)) %>% 
+  arrange(desc(group_prct), desc(prct)) %>% 
+  mutate(English = str_trunc(as.character(English), width = 30)) %>% 
+  write_tsv(here("crop_groupings.txt"))
+
+#plot grouped landuse
+LandUse_SJB_groups %>% 
+  select(Landuse_code, English, crop_groups, prct) %>% 
+  group_by(crop_groups) %>% 
+  mutate(group_prct = sum(prct)) %>% 
+  select(crop_groups, group_prct) %>% 
+  distinct() %>% 
+  arrange(desc(group_prct)) %>% 
+  ungroup() %>% 
+  mutate(cum_prct = cumsum(group_prct)) %>% 
+  arrange(group_prct) %>% 
+  mutate(crop_groups = factor(crop_groups, levels = .$crop_groups)) %>% 
+  pivot_longer(-crop_groups) %>% 
+  ggplot(aes(x = crop_groups, y = value, colour = name))+
+  geom_point()+
+  geom_bar(data = . %>% filter(name == "group_prct"), stat = "identity", fill = NA)+
+  coord_flip()+
+  theme_minimal()+
+  scale_color_brewer(palette = "Set1")+
+  labs(y = "percent (per group and cumulative)",
+         x = "crop group",
+       title = "relative amount of each agriculural land cover - grouped")
+
+
+ggsave(filename = here("plots", "crop_groups.jpg"), height = 4, width = 6)  
 ```
 
-## recode Landuse classes from NMD
+## recode NMD
+
+Distibution of Landuse classes in NMD
+
+```{r}
+LandUse %>% 
+  filter(karta %in% JKP_karta) %>% 
+  group_by(NMD) %>% 
+  summarise(n = sum(n)) %>% 
+  left_join(NMD_meta) %>% 
+  mutate(Klass = ifelse(NMD == 0, "Outside_map", Klass)) %>% 
+  mutate(prct = n/sum(n)*100) %>% 
+  arrange(desc(prct)) %>% 
+  ungroup() %>% 
+  mutate(cum_prct = cumsum(prct)) %>% 
+  arrange(prct) %>% 
+  mutate(Klass = factor(Klass, levels = .$Klass)) %>% 
+  select(Klass, contains("prct")) %>% 
+  pivot_longer(-Klass) %>% 
+  ggplot(aes(x = Klass, y = value, colour = name))+
+  geom_point()+
+  geom_bar(data = . %>% filter(name == "prct"), stat = "identity", fill = NA)+
+  coord_flip()+
+  theme_minimal()+
+  scale_color_brewer(palette = "Set1")+
+  labs(y = "percent (per group and cumulative)",
+         x = "crop group")
+
+ggsave(filename = here("plots", "NMD_code_dist.jpg"), height = 6, width = 8)  
+```
+
 -> we do not distinguish between forest on wetland and forest on dry land
 -> we do not distinguish between 
 
@@ -105,31 +245,133 @@ LandUse %>%
 ```
 
 
-+ NMDbase landuse class `3 (Åkermark)` is filled in by data from SJB
-+ SJB Landuse class `Woody_crops` is replaced by class `115	Triviallövskog (utanför våtmark)`
+Distribution of grouped Landuse classes in NMD
+```{r}
+LandUse %>% 
+  filter(karta %in% JKP_karta) %>% 
+  group_by(NMD) %>% 
+  summarise(n = sum(n)) %>% 
+  left_join(NMD_meta) %>% 
+  mutate(Klass = ifelse(NMD == 0, "Outside_map", Klass)) %>% 
+  mutate(Klass = gsub("(.+)\\(utanför våtmark\\)", "\\1", Klass)) %>% 
+  mutate(prct = n/sum(n)*100) %>% 
+  arrange(desc(prct)) %>% 
+  ungroup() %>% 
+  mutate(cum_prct = cumsum(prct)) %>% 
+  arrange(prct) %>% 
+  mutate(Klass = factor(Klass, levels = .$Klass)) %>% 
+  select(Klass, contains("prct")) %>% 
+  pivot_longer(-Klass) %>% 
+  ggplot(aes(x = Klass, y = value, colour = name))+
+  geom_point()+
+  geom_bar(data = . %>% filter(name == "prct"), stat = "identity", fill = NA)+
+  coord_flip()+
+  theme_minimal()+
+  scale_color_brewer(palette = "Set1")+
+  labs(y = "percent (per group and cumulative)",
+         x = "crop group")
 
-+ we add a class for NMD = 0 which codes for pixels outside the border of the map (during extraction from buffers)
+ggsave(filename = here("plots", "NMD_groups.jpg"), height = 4, width = 6)  
+```
+
+## join Landuse
+
+The NMD contains the LandUse class `3 (Åkermark)` onto which we match the data from SJB. 
+
+However the match is not perfect (because the NMD has taken the blockdata - not the application data as template and because & because the exact polygones change a bit between the years while the NMD does not)
+
+We let the SJB data take over the NMD data 
 
 ```{r}
+LandUse %>% 
+  filter(karta %in% JKP_karta) %>% 
+  pivot_longer(starts_with("SJB"), names_to = "year", values_to = "Crop") %>% 
+  group_by( year, Crop, NMD) %>% 
+  summarise(n = sum(n)) %>% 
+  group_by(year, Crop) %>% 
+  mutate(n = round(n / sum(n) * 100, 1)) %>% 
+  left_join(NMD_meta) %>% 
+  filter(Klass == "Åkermark") %>% 
+  pivot_wider(names_from = year, values_from = n) %>% 
+  select(-NMD)
+  
+```
+The one class that doesn't match the class `3 (Åkermark)` is `Pasture`. This is because `Pasture` is an additional layer in the NMD. 
+
+```{r}
+LandUse %>% 
+  filter(karta %in% JKP_karta) %>% 
+  filter(SJB_2012 == "Pasture") %>% 
+  group_by(SJB_2012, NMD) %>% 
+  summarise(n = sum(n)) %>% 
+  arrange(desc(n)) %>% 
+  mutate(n = round(n / sum(n) * 100, 1)) %>% 
+  left_join(NMD_meta)
+```
+
+Pasture is split between pasture with some sort of tree cover and pasture without tree cover
+
+```{r}
+
+LandUse %>% 
+  filter(karta %in% JKP_karta) %>% 
+  left_join(NMD_meta) %>% 
+  filter(SJB_2012 == "Pasture") %>% 
+   left_join(NMD_meta) %>% 
+  mutate(SJB_2012 = case_when(SJB_2012 == "Pasture" & grepl("\\wskog", Klass) ~ paste(SJB_2012, "with_trees", sep = "_"),
+                              TRUE ~ SJB_2012)) %>% 
+  group_by(SJB_2012) %>% 
+  summarise(n = sum(n)) %>% 
+  arrange(desc(n)) %>% 
+  mutate(`%` = round(n / sum(n) * 100, 1))
+
+```
+
+1) We let the SJB take over the NMD
+2) We split Pasture in 2 classes (with and without forest, according to NMD)
+3) SJB Landuse class `Woody_crops` is replaced by class `115	Triviallövskog (utanför våtmark)`
+
+Not all pixel that are coded `3 Åkermark`in the NMD are covered by the SJB. It's seldom much (see above) but we need to deal with it. 
+
+4) We declare the remaining `Åkermark` as `Övrig_öppen_mark_med_vegetation`
+
+
+5) We add a class for NMD = 0 which codes for pixels outside the border of the map (during extraction from buffers - not relevant for JKP)
+
+create new NMD metadata with grouped landuse classes
+```{r}
+
 
 LandUse_meta <- 
 NMD_meta %>% 
   filter(NMD %in% unique(LandUse$NMD)) %>% 
   rename(LandUse = Klass,
          LandUse_code = NMD) %>% 
-  mutate(LandUse = gsub("(\\w+)\\s\\(utanför våtmark\\)", "\\1", LandUse),
+  #collapse forest classes
+  mutate(LandUse = gsub("(\\w+)\\s\\(utanför våtmark\\)", "\\1", LandUse), 
+         #collapse building classes
          LandUse = gsub("(\\w+), byggnad", "\\1", LandUse),
+         #strip remaining spaces
          LandUse = gsub("\\s", "_", LandUse)) %>% 
+  #add class for code 0
   rbind(tibble(LandUse_code = 0, LandUse = "Outside_map" ))
+```
 
-LandUse <- 
+reclassify NMD
+
+1) change NMD codes to factor level
+2) recode NMD data with SJB
+```{r}
+LandUse_long <- 
 LandUse %>% 
+  mutate(rowID = 1:n()) %>% 
   mutate(NMD = LandUse_meta[ match(NMD, LandUse_meta$LandUse_code),]$LandUse) %>% 
-  mutate_at(vars(starts_with("SJB_")), list(
-    ~case_when(NMD != "Åkermark" ~ NMD,
-               . == "Woody_crops" ~ "Triviallövskog",
-                  TRUE ~ .))
-  )
+  pivot_longer(starts_with("SJB")) %>% 
+  mutate(NMD = case_when(value == "Pasture" & grepl("\\wskog", NMD) ~ "Pasture_w_Trees",
+                         value == "Woody_crops" ~ "Triviallövskog",
+                         !is.na(value) ~ value,
+                         TRUE ~ NMD)) 
+
 
 ```
 
@@ -139,23 +381,21 @@ Not all pixel that are coded `3 Åkermark`in the NMD are covered by the SJB. It'
 we declare the remaining `Åkermark` as `Övrig_öppen_mark_med_vegetation`. 
 
 ```{r}
-LandUse <- 
-LandUse %>% 
-  mutate_at(vars(starts_with("SJB_")), list(
-    ~case_when(NMD == "Åkermark" & is.na(.) ~ "Övrig_öppen_mark_med_vegetation",
-                  TRUE ~ .))
-  )
+LandUse_long <- 
+LandUse_long %>% 
+  mutate(NMD = case_when(NMD == "Åkermark" ~ "Övrig_öppen_mark_med_vegetation",
+                         TRUE ~ NMD))
 ```
 
 LandUse code 0 ("Outside_map") is for pixel outside NMD. It needs to be dealt with.
 
 ```{r}
-
 Routes_not_covered <- 
-LandUse %>% 
+LandUse_long %>% 
   select(karta, position, NMD, n) %>% 
-  group_by(karta, position) %>% 
   filter(NMD == "Outside_map") %>% 
+  distinct() %>% 
+  group_by(karta, position) %>% 
   mutate(n = sum(n)) %>% 
   group_by(karta) %>% 
   mutate(N_Excl = n())
@@ -167,34 +407,94 @@ For the remaining routes I exclude only the buffers with missing data.
 
 ```{r}
 
-LandUse <-  
-LandUse %>%  
+LandUse_long <-  
+LandUse_long %>%  
   filter( !karta %in% filter(Routes_not_covered, N_Excl >= 4)$karta) %>% 
   filter( !paste(karta, position) %in% 
             paste(filter(Routes_not_covered, N_Excl <4)$karta,
                   filter(Routes_not_covered, N_Excl <4)$position)) 
+
 ```
 
-## wide format
+Distribution of joined Landuse classes
+```{r}
+LandUse_long %>% 
+  filter(karta %in% JKP_karta) %>% 
+  group_by(NMD, name) %>% 
+  summarise(n = sum(n)) %>% 
+  group_by(name) %>% 
+  mutate(prct = n/sum(n)*100) %>% 
+  arrange(desc(name), prct) %>% 
+  ungroup() %>% 
+  mutate(NMD = factor(NMD, levels = unique(.$NMD))) %>%
+  mutate(name = factor(name, levels = unique(.$name))) %>% 
+  ggplot(aes(x = NMD, y = prct, fill = name))+
+  geom_bar(position = position_dodge(width = 0.8), stat = "identity")+
+  coord_flip()+
+  theme_minimal()+
+  scale_fill_brewer(palette = "Paired")#+
+  labs(y = "percent (per group and cumulative)",
+         x = "crop group")
+
+ggsave(filename = here("plots", "LandUse_groups.jpg"), height = 6, width = 8)  
+```
+
+## export
+transform back to wide format
 
 ```{r}
 LandUse <- 
-LandUse %>% 
-  select(-NMD) %>% 
-  pivot_longer(cols = starts_with("SJB"), names_to = c("year"), values_to = "LandUse") %>% 
-  group_by(karta, position, year, LandUse) %>% 
-  summarise(n = sum(n))
-
-LandUse <- 
-LandUse %>% 
-  pivot_wider(names_from = LandUse, values_from = n, values_fill = 0)
-
-LandUse
+  LandUse_long %>% 
+  select(-value) %>% 
+  group_by(karta, position, name, NMD) %>% 
+  summarise(n = sum(n)) %>% 
+  pivot_wider(names_from = NMD, values_from = n, values_fill = 0) %>% 
+  rename(year = name)
+  
 ```
+
 
 ```{r}
-write_csv(LandUse, here("data", "LandUse_joint_points.csv"))
-#write_csv(LandUse, here("data", "LandUse_joint_lines.csv"))
+#write_csv(LandUse, here("data", "LandUse_joint_points.csv"))
+write_csv(LandUse, here("data", "LandUse_joint_lines.csv"))
 ```
 
+
+#QGIS
+
+make colour maps for QGIS project
+
+##NMD
+
+```{r}
+NMD_cols <- read_delim(here("NMD_codes.clr"), delim = " ", 
+                       col_names = c("Landuse_code", "X1", "X2", "X3", "X4", "Label"))
+NMD_cols <- 
+NMD_cols %>% 
+  left_join(dplyr::select(SJB_meta, Landuse_code, English)) %>% 
+   mutate(crop_groups = case_when(
+    Landuse_code %in% c(52,54,55,56,89,95,96) ~ "Pasture",
+    Landuse_code %in% c(49,50,51,53,57,58,59,80,81) ~ "Ley",
+    Landuse_code %in% c(1,3,4,7,8,12,20,22) ~ "Winter_cereal",
+    Landuse_code %in% c(2,5,9,21,23,30,31) ~ "Spring_cereal",
+    Landuse_code %in% c(60,62,69) ~ "Fallow",
+    Landuse_code %in% c(45, 46,47,32,35) ~ "Tuber_Root", 
+    Landuse_code %in% c(65,67,68) ~ "Woody_crops",
+    is.na(English) ~ NA_character_,
+    TRUE ~ "Other"))
+
+cols <- 
+NMD_cols %>% 
+  group_by(crop_groups) %>% 
+  slice(1) %>% 
+  dplyr::select(crop_groups, starts_with("X"))
+
+NMD_cols <- 
+NMD_cols %>% 
+ left_join(cols, by = "crop_groups") %>% 
+ dplyr::select(Landuse_code, ends_with("y"), crop_groups)
+
+
+write_delim(NMD_cols, file = here("NMD_codes_new.clr"), col_names = FALSE)
+```
 
