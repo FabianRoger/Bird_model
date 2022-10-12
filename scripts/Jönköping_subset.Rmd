@@ -1,0 +1,121 @@
+---
+title: "Jönköping karta"
+output: html_notebook
+---
+
+```{r}
+library(ggplot2)
+library(sf)
+library(here)
+library(dplyr)
+library(raster)
+library(plotly)
+```
+
+```{r}
+Point_counts <- 
+  read_sf(here("Standardrutter-shapefiler", "stdruttPunkter.shp")) %>% 
+  st_set_crs(3021) %>% 
+  st_transform(crs = 3006) %>% 
+  group_by(KARTA) %>% 
+  summarise() %>% 
+  st_centroid()
+```
+
+
+# Jönköping region
+Here we subset the data to include the Jönköping sample region routes in a similar landscape. 
+
+## define region
+
+Here we define the region for the model 
++ Taking the JKP study region
++ Taking the agricultural production regions defined by SCB
++ Choosing all routes that fall into production region 5 (Götalands Skogsbygder)
++ excluding coastal routes, defined as being within 5 km from the coast
+
+
+The production areas are :
+
+1 : Götalands Södra Slättbygder
+2 : Götalands Mellanbygder
+3 : Götalands Norra Slättbygder
+4 : Svealands Slätbygder
+5 : Götalands Skogsbygder
+6 : Mellersta Svergies Skogsbygder
+7 : Nedre Norrland
+8 : Övre Norrland
+
+```{r}
+#production areas
+Prod_reg <- 
+  read_sf(here("data", "prodzon2.shp")) %>% 
+  mutate(Area = case_when(
+    PO8 == 1 ~ "1 - Götalands Södra Slättbygder", 
+    PO8 == 2 ~ "2 - Götalands Mellanbygder",
+    PO8 == 3 ~ "3 - Götalands Norra Slättbygder",
+    PO8 == 4 ~ "4 - Svealands Slätbygder",
+    PO8 == 5 ~ "5 - Götalands Skogsbygder",
+    PO8 == 6 ~ "6 - Mellersta Svergies Skogsbygder",
+    PO8 == 7 ~ "7 - Nedre Norrland",
+    PO8 == 8 ~ "8 - Övre Norrland"
+  )) %>% st_set_crs(3021) %>% 
+  st_transform(crs = 3006)
+
+ggplot(Prod_reg)+
+  geom_sf(alpha = 0.5, aes(fill = Area))+
+  scale_fill_brewer(palette = "Paired")+
+  theme_bw()
+```
+
+add our study region and the buffer of -5km around the coastline
+```{r}
+#study region as defined for F2F
+JKP <- 
+read_sf(here("data", "prod_län_combi_byyann_skarning2.shp")) %>% 
+  st_set_crs(3006)
+
+
+#get country boardes for JKP
+SWE <- getData('GADM', country='SWE', level=0)
+
+SWE <- 
+SWE %>% 
+  st_as_sf() %>%
+  st_transform(crs = 3006) %>% 
+  st_simplify() %>% 
+  st_buffer(-5000)
+```
+
+subset the routes that fall within the production region 5 and with > 5 km distance from the coast
+```{r}
+Point_counts_sel <- 
+  Point_counts %>% 
+  st_join(filter(Prod_reg, PO8 == 5), join = st_covered_by, left = FALSE) %>% 
+  st_join(SWE, join = st_covered_by, left = FALSE)
+
+p <- ggplot(Prod_reg)+
+  geom_sf(alpha = 0.5, aes(fill = Area))+
+  scale_fill_brewer(palette = "Paired")+
+  geom_sf(data = JKP, fill = "white", alpha = 0.5, colour = "red")+
+  geom_sf(data = Point_counts, shape = 22)+
+  geom_sf(data = Point_counts_sel, colour = "red", shape = 22)+
+  geom_sf(data = SWE, colour = "darkblue", fill = NA)+
+  theme_bw()
+  
+p %>% ggplotly
+
+p +
+  scale_y_continuous(limits = c(6100000,6600000))+
+  scale_x_continuous(limits = c(260000,740000))
+
+ggsave(here("plots", "route_selection.png"))
+```
+
+export routes
+
+```{r}
+#export list of routes in JKP region
+JKP_karta <- Point_counts_sel$KARTA
+saveRDS(JKP_karta, here("data", "JKP_karta.RDS"))
+```
