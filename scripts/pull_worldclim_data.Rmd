@@ -1,0 +1,28 @@
+---
+title: "pulling worldclim data"
+output: html_notebook
+---
+
+```{r}
+library(raster)
+
+# get climate data for northern part of Sweden at 0.5° res (~1 km^2)
+climate1 <- getData('worldclim', var='bio', res=0.5, lon = 18, lat = 60)
+
+# get climate data for southern part of Sweden
+climate <- getData('worldclim', var='bio', res=0.5, lon = 18, lat = 70)
+
+#merge rasters
+climate_j <- merge(climate1, climate)
+
+#get contour lines for Sweden
+Sweden <- getData('GADM' , country="SWE", level=0)
+
+climate_Sw <- crop(climate_j, Sweden)
+
+climate_Sw <- projectRaster(climate_Sw, crs =  "+proj=utm +zone=33 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs")
+
+writeRaster(climate_Sw, here("data", "WordClimSweden05.tif"), overwrite = TRUE)
+
+plot(climate_Sw, maxnl=1)
+```
