@@ -11,28 +11,86 @@ library(dplyr)
 library(tidyr)
 library(here)
 library(future.apply)
+library(pbapply)
 library(readxl)
+library(ggthemes)
 ```
 
 ## load bird routes
 
 ```{r}
-Standard_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
-Freecounts_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
+Standard_geo_p <- read_sf(here("data", "Standardrutter-shapefiler", "stdruttPunkter.shp"))
+Standard_geo_l <- read_sf(here("data", "Standardrutter-shapefiler", "stdruttLinjer.shp"))
+#Standard_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
+#Freecounts_geo <- read_sf(here("data", "Standard_routes_geo.gpkg"))
+
+Standard_geo_p <- 
+  Standard_geo_p %>% 
+  dplyr::select(KARTA, PUNK) %>% 
+  rename(karta = KARTA, position = PUNK) %>% 
+  mutate(type = "point")
+
+Standard_geo_l <- 
+  Standard_geo_l %>% 
+  dplyr::select(KARTA, LINJE) %>% 
+  rename(karta = KARTA, position = LINJE) %>% 
+  mutate(type = "line")
+
+Standard_geo <- 
+  bind_rows(Standard_geo_p, Standard_geo_l) %>% 
+  mutate(position = tolower(position))
 ```
+
+To keep the information about what LandUse is in what raster in which year, we need to extract from all raster simultaneously. The SJB raster have been rasterized using the NMD as template so all SJB raster as well as the NMD have the same extent and can be stacked. 
+
 
 ## load application data
 
 ```{r}
 
 SJB_files <- list.files(here("data", "SJB"), pattern = ".+tif$")
-SJB_raster <- lapply(SJB_files, 
+SJB_raster <- pblapply(SJB_files, 
                     function(x) raster(paste(here("data", "SJB"), x, sep = "/")))
 
 
 gsub("(\\w+).tif", "\\1", SJB_files) %>% 
   paste("SJB", . , sep = "_") -> names(SJB_raster)
 
+```
+
+## load NMD data
+
+```{r}
+NMD <- raster(here("data", "NMD", "nmd2018bas_ogeneraliserad_v1_0.tif"))
+
+NMD_meta <- 
+  NMD@data@attributes %>% 
+  as.data.frame() %>% 
+  mutate(Klass = iconv(as.character(Klass), "latin1"))
+
+levels(NMD) <- NMD_meta
+
+NMD_meta <-
+  NMD_meta %>% 
+  dplyr::select(-Opacity) %>% 
+  filter(Klass != "") 
+```
+
+stack raster
+
+```{r}
+
+SJB_raster$NMD <- NMD
+
+LandUse_stack <- stack(SJB_raster, NMD)
+
+```
+
+reproject standard geo
+
+```{r}
+st_crs(Standard_geo) <-  "EPSG:2400"
+Standard_geo <- st_transform(Standard_geo, st_crs(NMD))
 ```
 
 
@@ -43,103 +101,175 @@ gsub("(\\w+).tif", "\\1", SJB_files) %>%
 Standard_geo_buffer <- 
   Standard_geo %>% 
   group_by(karta) %>% 
-  summarise() %>% 
+  summarise(.groups = "drop") %>% 
   st_convex_hull() %>% 
   st_buffer(1000) 
 
 ```
 
 
-**crop list of raster for SJB data**
+**crop list of raster for LandUse data**
 
 we make a list of length 7 for the 7 years of SJB application data we have. Each entry is itself a list 
 ```{r}
-plan(multiprocess, workers = 4)
 
 # extract raster from SJB for each route for each year
 Buffer_list <- 
   Standard_geo_buffer %>% 
   split(.$karta) 
 
-SJB_Raster_list <- 
-lapply(SJB_raster, function(x) {
-  future_lapply(Buffer_list, function(y) crop(x, y))
+LandUse_stack_list <- 
+pblapply(Buffer_list, function(x) {
+  crop(LandUse_stack, x)
   })
 
-plan(sequential)
 ```
 
 
+extract raster values in 500 m buffer around points for all routes
 ```{r}
 # vector of route names 
-Routes <- names(SJB_Raster_list[[1]])
+Routes <- names(Buffer_list)
 
-# extract rastervalues in 500 m buffer around points for all routes
-
-plan(multiprocess, workers = 4)
-
-options(future.globals.maxSize= 943718400)
-
-SJB_point_buffer_list <- 
-lapply(SJB_Raster_list, function(z){
+LandUse_point_buffer <- 
   
-  future_lapply(Routes, function(x) {
+  pblapply(Routes, function(x) {
     
     filter(Standard_geo, karta == x, type == "point") %>%
-  raster::extract(x = z[[x]], y =  ., buffer = 500, cellnumbers = T, 
-                  df = T) %>%
-    as_tibble() %>% 
-    mutate(karta = x, position = paste("p", ID, sep = ""))
-  
-  }) 
-  
-})
+      raster::extract(x = LandUse_stack_list[[x]], y =  ., buffer = 500, 
+                      cellnumbers = F, df = T) %>%
+      as_tibble() %>%
+      mutate(karta = x, position = paste("p", ID, sep = "")) %>% 
+      group_by(across(c(position, karta, NMD, starts_with("SJB"))))%>% 
+      summarise(n = n(), .groups = "drop")
+    }) %>% 
+  bind_rows()
 
-```
-
-
-```{r}
-SJB_point_buffer_list_dfs <- lapply(SJB_point_buffer_list, bind_rows)
-
-LandUse_SJB <- as_tibble(SJB_point_buffer_list_dfs[[1]]) %>% 
-  select(karta, position, cells)
-
-LandUse_SJB <- 
-  LandUse_SJB %>% 
-  mutate(SJB_2012 = SJB_point_buffer_list_dfs[[1]][[3]],
-         SJB_2013 = SJB_point_buffer_list_dfs[[2]][[3]],
-         SJB_2014 = SJB_point_buffer_list_dfs[[3]][[3]],
-         SJB_2015 = SJB_point_buffer_list_dfs[[4]][[3]],
-         SJB_2016 = SJB_point_buffer_list_dfs[[5]][[3]],
-         SJB_2017 = SJB_point_buffer_list_dfs[[6]][[3]],
-         SJB_2018 = SJB_point_buffer_list_dfs[[7]][[3]])
 ```
 
 export data
-
 ```{r}
-saveRDS(LandUse_SJB, here("data", "LandUse_SJB_points_500m.Rds"))
+saveRDS(LandUse_point_buffer, here("data", "LandUse_points_500m.Rds"))
 ```
 
+#line counts
+
+## Make buffers 
 ```{r}
 
-SJB_meta <- 
-  read_xlsx(here("data", "crop_codes_english.xlsx")) %>% 
-  filter(year == 2012) %>% 
-  select(-Swedish)
+#distance centroid to mid-line point
+d <- 1000
 
-LandUse_SJB %>% 
-  filter_at(vars(starts_with("SJB_")), any_vars(!is.na(.))) %>% 
-  mutate_at(vars(starts_with("SJB_")), function(x)  SJB_meta[match(x, SJB_meta$`Landuse code`), ]$English) %>%
-  select(starts_with("SJB")) %>% 
-  group_by_at(vars(starts_with("SJB"))) %>% 
-  mutate(n = n()) %>% 
-  distinct() %>% 
-  arrange(desc(n)) %>% 
-  ungroup() %>% 
-  mutate(n_prct = cumsum(signif(n/sum(n)*100,2))) %>% 
-  View
+# buffer width
+b <- 500
+
+Line_buffers <- 
+  Standard_geo %>% 
+  group_by(karta) %>% 
+  summarise(.groups = "drop") %>% 
+  st_centroid()%>% 
+    mutate(p1 = geometry + c(0,d-b/2),
+           p2 = geometry + c(0,d+b/2),
+           p3 = geometry + c(d-b/2,d-b/2),
+           p4 = geometry + c(d+b/2, d+b/2),
+           p5 = geometry + c(d-b/2,0),
+           p6 = geometry + c(d+b/2,0),
+           p7 = geometry + c(d-b/2,-(d-b/2)),
+           p8 = geometry + c(d+b/2,-(d+b/2)),
+           p9 = geometry + c(0,-(d-b/2)),
+           p10 = geometry + c(0,-(d+b/2)),
+           p11 = geometry + c(-(d-b/2),-(d-b/2)),
+           p12 = geometry + c(-(d+b/2), -(d+b/2)),
+           p13 = geometry + c(-(d-b/2),0),
+           p14 = geometry + c(-(d+b/2),0),
+           p15 = geometry + c(-(d-b/2),d-b/2),
+           p16 = geometry + c(-(d+b/2), d+b/2)) %>% 
+    pivot_longer(cols = starts_with("p"), names_to = "point") %>% 
+    dplyr::select(-geometry) %>% 
+    rename(geometry = value) %>% 
+    group_by(karta) %>% 
+    slice(c(1,2,3,4,3,4,5,6,5,6,7,8,7,8,9,10,9,10,11,12,11,12,13,14,13,14,15,16,15,16,1,2)) %>%
+    mutate(line = rep(rep(c(4:8,1:3), each = 4),n()/32)) %>% 
+    st_as_sf()  %>% 
+    group_by(karta, line) %>% 
+    summarise(.groups = "drop") %>% 
+    st_convex_hull() %>% 
+    st_set_crs(crs(Standard_geo)) %>% 
+    mutate(line = paste("l", line, sep = ""))
+
+
+Line_buffers %>% 
+  filter(karta == "02C2H") %>% 
+  ggplot()+
+  geom_sf(aes(fill = line))+
+  geom_sf(data = Standard_geo %>% filter(karta == "02C2H") %>%  filter(type == "line"))
+```
+
+example of line buffer
+
+```{r}
+
+NMD_meta <- 
+  NMD_meta %>% 
+  mutate(Colour = c(
+  "#30b092","#9e6b05","#e3e854","#afc244","#911f1f","#757373","#000000",
+  "#287ebf","#063780","#044a04","#036303","#0b5e0b","#147314","#49b849",
+  "#009c00","#239623","#819623","#044a3b","#03634b","#0b5e4f","#147355",
+  "#49b88c","#009c63","#239677","#7d9623"
+  ))
+
+pal = c(NMD_meta$Colour)
+names(pal) <- NMD_meta$Klass
+
+NMD_crop <- 
+Standard_geo_buffer %>% 
+  filter(karta == "02C2H") %>% 
+  crop(NMD, .) 
+
+NMD_crop %>% 
+  as(., "SpatialPixelsDataFrame") %>% 
+  as.data.frame() %>% 
+  rename(ID = nmd2018bas_ogeneraliserad_v1_0) %>%
+  left_join(NMD_meta) %>% 
+  ggplot() +  
+  geom_raster(aes(x=x, y=y, fill=Klass, alpha = 1))+
+  geom_sf(data = filter(Standard_geo, karta == "02C2H"), colour = "black")+
+  geom_sf(data = filter(Line_buffers, karta == "02C2H"), 
+          fill = NA, colour = "red")+
+  scale_fill_manual(values = pal)+
+  theme_map() +
+  theme(legend.position = "none")+
+  scale_y_continuous(expand = c(0, 0)) +
+  scale_x_continuous(expand = c(0, 0))
+
+
+ggsave(here("plots", "linebuffer.jpeg"))
+  
 ```
 
 
+extract raster values in 250 m buffer around points for all routes
+```{r}
+# vector of route names 
+Routes <- names(Buffer_list)
 
+LandUse_line_buffer <- 
+  
+  pblapply(Routes, function(x) {
+    
+    filter(Line_buffers, karta == x) %>%
+      raster::extract(x = LandUse_stack_list[[x]], y =  ., cellnumbers = F, df = T) %>%
+      as_tibble() %>%
+      mutate(karta = x, position = paste("l", ID, sep = "")) %>% 
+      group_by(across(c(position, karta, NMD, starts_with("SJB"))))%>% 
+      summarise(n = n(), .groups = "drop")
+    }) %>% 
+  bind_rows()
+
+```
+
+
+export data
+```{r}
+saveRDS(LandUse_line_buffer, here("data", "LandUse_lines_500m.Rds"))
+```
